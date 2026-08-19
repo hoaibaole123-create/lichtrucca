@@ -1,0 +1,185 @@
+import { BASE_DATE, SHIFTS, RULES } from '../constants';
+
+export function fmtVN(d: any) {
+  if (!d) return '';
+  const date = (typeof d === 'string') ? new Date(d + (d.includes('T') ? '' : 'T00:00:00')) : d;
+  if (isNaN(date.getTime())) return '';
+  return ('0' + date.getDate()).slice(-2) + '/' + ('0' + (date.getMonth() + 1)).slice(-2) + '/' + date.getFullYear();
+}
+
+export function fmtIn(d: any) {
+  const date = (typeof d === 'string') ? new Date(d + (d.includes('T') ? '' : 'T00:00:00')) : d;
+  if (isNaN(date.getTime())) return '';
+  const y = date.getFullYear();
+  const m = ('0' + (date.getMonth() + 1)).slice(-2);
+  const day = ('0' + date.getDate()).slice(-2);
+  return `${y}-${m}-${day}`;
+}
+
+export function dayN(d: any) {
+  const date = (typeof d === 'string') ? new Date(d + (d.includes('T') ? '' : 'T00:00:00')) : d;
+  if (isNaN(date.getTime())) return '';
+  return ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'][date.getDay()];
+}
+
+export function abbrev(n: string) {
+  const p = n.trim().split(/\s+/);
+  if (p.length <= 1) return n;
+  return p.slice(0, -1).map(x => x[0] + '.').join('') + p[p.length - 1];
+}
+
+export function xacDinhCa(ngay: any, kip: number, customBaseDate?: Date | string, customShifts?: string[][]) {
+  const date = (typeof ngay === 'string') ? new Date(ngay + (ngay.includes('T') ? '' : 'T00:00:00')) : ngay;
+  if (isNaN(date.getTime())) return '';
+  
+  let baseDateObj = BASE_DATE;
+  if (customBaseDate) {
+    const parsed = (typeof customBaseDate === 'string') ? new Date(customBaseDate + (customBaseDate.includes('T') ? '' : 'T00:00:00')) : customBaseDate;
+    if (!isNaN(parsed.getTime())) baseDateObj = parsed;
+  }
+
+  const shifts = (customShifts && customShifts.length > 0) ? customShifts : SHIFTS;
+  const diff = Math.floor((date.getTime() - baseDateObj.getTime()) / 86400000);
+  const cycleLen = shifts[0]?.length || 5;
+  const kipIdx = ((kip - 1) % shifts.length + shifts.length) % shifts.length;
+  return shifts[kipIdx][((diff % cycleLen) + cycleLen) % cycleLen] || 'O';
+}
+
+export function timNghi(cd: string, kip: number, staffData: string[][]) {
+  if (!cd || !staffData || !Array.isArray(staffData)) return null;
+  const targetCd = cd.trim().toLowerCase();
+  
+  // 1. Exact match (case-insensitive & trimmed)
+  for (let i = 0; i < staffData.length; i++) {
+    const r = staffData[i];
+    if (r && r[0] && r[0].trim().toLowerCase() === targetCd && r[kip] && r[kip].trim()) {
+      return r[kip].trim();
+    }
+  }
+
+  // 2. Partial match fallback (e.g. "Trưởng ca" vs "Trưởng ca đập")
+  for (let i = 0; i < staffData.length; i++) {
+    const r = staffData[i];
+    if (r && r[0]) {
+      const rTitle = r[0].trim().toLowerCase();
+      if ((rTitle.includes(targetCd) || targetCd.includes(rTitle)) && r[kip] && r[kip].trim()) {
+        return r[kip].trim();
+      }
+    }
+  }
+
+  return null;
+}
+
+export function timThay(kipThay: number, cd: string, staffData: string[][]) {
+  if (kipThay < 1 || kipThay > 5 || !staffData || !Array.isArray(staffData)) return 'N/A';
+  const targetCd = (cd || '').trim().toLowerCase();
+
+  // 1. Exact match (case-insensitive & trimmed)
+  for (let i = 0; i < staffData.length; i++) {
+    const r = staffData[i];
+    if (r && r[0] && r[0].trim().toLowerCase() === targetCd && r[kipThay] && r[kipThay].trim()) {
+      return r[kipThay].trim();
+    }
+  }
+
+  // 2. Partial match fallback
+  for (let i = 0; i < staffData.length; i++) {
+    const r = staffData[i];
+    if (r && r[0]) {
+      const rTitle = r[0].trim().toLowerCase();
+      if ((rTitle.includes(targetCd) || targetCd.includes(rTitle)) && r[kipThay] && r[kipThay].trim()) {
+        return r[kipThay].trim();
+      }
+    }
+  }
+
+  // 3. Fallback to any staff in that kip for the position
+  for (let i = 0; i < staffData.length; i++) {
+    if (staffData[i] && staffData[i][kipThay] && staffData[i][kipThay].trim()) {
+      return staffData[i][kipThay].trim();
+    }
+  }
+  return 'N/A';
+}
+
+export function isForbidden(kip: number, shift: string, prevShift: Record<number, string>, getNext: any, todayActual?: string, prevPrevShift?: Record<number, string>) {
+  const pre = prevShift[kip];
+  const post = typeof getNext === 'function' ? getNext(kip, 1) : (getNext ? getNext[kip] : null);
+  const postPost = typeof getNext === 'function' ? getNext(kip, 2) : null;
+  const cur = todayActual || null;
+  const prePre = prevPrevShift ? prevPrevShift[kip] : null;
+  
+  // 0. Trùng ca: Nếu kíp này đã có ca trực (tự nhiên hoặc đã phân thay) thì không thể đi thay ca khác
+  if (shift !== 'O' && cur !== 'O' && cur !== null && shift !== cur) {
+    return { bad: true, note: `Vi phạm: Kíp ${kip} đã có ca ${cur}` };
+  }
+
+  // 1. Ca C hôm trước (ngày n) -> Ca K hôm nay (ngày n+1): CẤM TUYỆT ĐỐI
+  if (pre === 'C' && shift === 'K') return { bad: true, note: 'Vi phạm: Ca C hôm qua → Ca K hôm nay (0h nghỉ)' };
+  
+  // 2. Ca K hôm nay (ngày n) -> Ca N hôm nay (ngày n): CẤM TUYỆT ĐỐI
+  if (shift === 'K' && cur === 'N') return { bad: true, note: 'Vi phạm: Ca K và Ca N cùng ngày (0h nghỉ)' };
+  if (shift === 'N' && cur === 'K') return { bad: true, note: 'Vi phạm: Ca N và Ca K cùng ngày (0h nghỉ)' };
+
+  // 3. Ca K hôm nay (ngày n) -> Ca C hôm nay (ngày n): CẤM (8h nghỉ - rất tight)
+  if (shift === 'K' && cur === 'C') return { bad: true, note: 'Vi phạm: Ca K và Ca C cùng ngày (8h nghỉ)' };
+  if (shift === 'C' && cur === 'K') return { bad: true, note: 'Vi phạm: Ca C và Ca K cùng ngày (8h nghỉ)' };
+
+  // 4. Ca C hôm nay (ngày n) -> Ca K ngày mai (ngày n+1): CẤM
+  // Nếu post là ca tự nhiên, ta có thể coi là "có thể điều chỉnh" nhưng vẫn rất xấu
+  if (shift === 'C' && post === 'K') return { bad: true, note: 'Vi phạm: Ca C hôm nay → Ca K ngày mai' };
+  
+  // 5. Ca K liên tiếp 3 ngày: CẤM
+  if (shift === 'K') {
+    if (pre === 'K' && prePre === 'K') return { bad: true, note: 'Vi phạm: 3 ca K liên tiếp (K-K-K)' };
+    if (pre === 'K' && post === 'K') return { bad: true, note: 'Vi phạm: 3 ca K liên tiếp (K-K-K ngày mai)' };
+    if (post === 'K' && postPost === 'K') return { bad: true, note: 'Vi phạm: 3 ca K liên tiếp (K-K-K ngày kia)' };
+  }
+  
+  return { bad: false, note: '' };
+}
+
+export function shiftPenalty(kip: number, shift: string, prevShift: Record<number, string>, getNext: any, coverCount: Record<number, number>, todayActual?: string, prevPrevShift?: Record<number, string>) {
+  let p = (coverCount[kip] || 0) * 50;
+  const fb = isForbidden(kip, shift, prevShift, getNext, todayActual, prevPrevShift);
+  
+  if (fb.bad) {
+    // Nếu vi phạm là do ca tương lai (post/postPost), ta giảm nhẹ penalty để thuật toán có thể chọn nếu cực kỳ cần thiết
+    // nhưng vẫn để ở mức rất cao (200.000) để ưu tiên các phương án khác.
+    // Các vi phạm quá khứ hoặc cùng ngày thì phạt cực nặng (500.000).
+    const isFutureViolation = fb.note.includes('ngày mai') || fb.note.includes('ngày kia');
+    p += isFutureViolation ? 200000 : 500000;
+  }
+  
+  if (shift === 'K') {
+    const pre = prevShift[kip];
+    if (pre === 'K') p += 2000; // Đã đi K hôm qua, ưu tiên người khác
+  }
+  
+  return p;
+}
+
+export function pickBest(offPool: number[], shift: string, prevShift: Record<number, string>, getNext: any, coverCount: Record<number, number>, preferKip: number | null, sh?: Record<number, string>, prevPrevShift?: Record<number, string>) {
+  const noCK = offPool.filter(k => {
+    if (shift === 'K' && prevShift[k] === 'C') return false;
+    return true;
+  });
+  const valid = noCK.filter(k => {
+    return !isForbidden(k, shift, prevShift, getNext, sh ? sh[k] : undefined, prevPrevShift).bad;
+  });
+  const pool = valid.length > 0 ? valid : (noCK.length > 0 ? noCK : offPool);
+  return pool.slice().sort((a, b) => {
+    const bA = (a === preferKip) ? -15 : 0;
+    const bB = (b === preferKip) ? -15 : 0;
+    return (shiftPenalty(a, shift, prevShift, getNext, coverCount, sh ? sh[a] : undefined, prevPrevShift) + bA)
+      - (shiftPenalty(b, shift, prevShift, getNext, coverCount, sh ? sh[b] : undefined, prevPrevShift) + bB);
+  })[0] || null;
+}
+
+export function buildConflict(kip: number, shift: string, prevShift: Record<number, string>, getNext: any, ruleKip: number | null, prevPrevShift?: Record<number, string>) {
+  const fb = isForbidden(kip, shift, prevShift, getNext, undefined, prevPrevShift);
+  if (fb.bad) return { flag: true, note: '⚠ Không tránh được: ' + fb.note };
+  if (ruleKip && kip !== ruleKip) return { flag: true, note: 'Điều chỉnh (kíp quy tắc cũng nghỉ / cân bằng)' };
+  return { flag: false, note: '' };
+}

@@ -1153,10 +1153,17 @@ export default function App() {
           </div>
           {/* App Title with separator */}
           <div className="border-l border-slate-200 pl-2.5 sm:pl-4 py-0.5 flex flex-col justify-center h-full text-left min-w-0">
-            <div className="text-[#053d6c] font-black text-[12px] sm:text-base md:text-xl font-sans tracking-tight leading-tight mt-0.5 truncate">
+            {/* Deliberately not `truncate`, which is overflow:hidden and so clips both axes.
+                These lines pair a heavy weight with leading-tight, and the resulting line box
+                is shorter than the ink: measured clearance above the text was 1px at 16px and
+                -0.5px at the 12px mobile size. That shaves the top off tall diacritics — the
+                hook on Ủ lost its loop and the leftover tail read as an acute, turning
+                "THỦY" into "THUÝ". Clipping only the inline axis keeps the ellipsis
+                behaviour while letting marks overflow upward. */}
+            <div className="text-[#053d6c] font-black text-[12px] sm:text-base md:text-xl font-sans tracking-tight leading-tight mt-0.5 whitespace-nowrap text-ellipsis overflow-x-clip">
               {activeWorkshop?.config?.companyName || 'CÔNG TY THỦY ĐIỆN IALY'}
             </div>
-            <div className="text-[#053d6c] font-black text-[12px] sm:text-base md:text-xl font-sans tracking-tight leading-tight mt-0.5 truncate">
+            <div className="text-[#053d6c] font-black text-[12px] sm:text-base md:text-xl font-sans tracking-tight leading-tight mt-0.5 whitespace-nowrap text-ellipsis overflow-x-clip">
               {activeWorkshop ? activeWorkshop.name : 'Phân xưởng Vận hành Ialy'}
             </div>
           </div>

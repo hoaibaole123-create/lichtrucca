@@ -10,8 +10,8 @@ import http from "http";
 import fs from "fs";
 import crypto from "crypto";
 import nodemailer from "nodemailer";
-import { pool as sqlPool, initLeaveTables, calcTravelDays, calcEntitledDays, calcSeniority } from "./db";
-import { listWorkingShifts, allocateLeaveDays, type ShiftConfig } from "./leaveCalc";
+import { pool as sqlPool, initLeaveTables, calcTravelDays, calcEntitledDays, calcSeniority } from "./db.js";
+import { listWorkingShifts, allocateLeaveDays, type ShiftConfig } from "./leaveCalc.js";
 dotenv.config();
 
 initLeaveTables().catch((e: any) => console.error("Failed to initialize SQL leave tables:", e.message));

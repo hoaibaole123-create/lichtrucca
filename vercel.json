@@ -2,12 +2,6 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "env": {
-    "VITE_API_URL": "@api_url"
-  },
-  "rewrites": [
-    {
-      "source": "/api/:path*",
-      "destination": "https://lichtrucca-api.onrender.com/api/:path*"
-    }
-  ]
+    "VITE_API_URL": ""
+  }
 }

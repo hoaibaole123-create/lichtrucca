@@ -5,19 +5,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Lịch trực thay ca vận hành</title>
 
-    <!-- Loaded here rather than through an @import inside index.css. From the stylesheet
-         the browser cannot even begin fetching the font until the main CSS has downloaded
-         and parsed, which measured at ~200ms before the request started; until the font
-         lands, headings render in a fallback face. Several of them ask for weight 900, and
-         no fallback ships one, so the browser fakes it by smearing weight 800 — that
-         smearing thickens the hook on Ủ until "THỦY" reads as "THUÝ". Requesting the font
-         from the HTML lets it download in parallel with the CSS and shrinks that window.
-         Weight 900 must stay in the list for the same reason. -->
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- The heading font is served by this app (see src/index.css) instead of Google.
+         Preloading the weight-900 Vietnamese cut specifically: it draws the company name
+         in the header, and while it is missing the browser falls back to a system face
+         that has no 900 weight, fakes the bold, and smears the hook on Ủ into something
+         that reads as the acute on Ý. crossorigin is required even same-origin, or the
+         preload is fetched a second time. -->
     <link
-      rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap"
+      rel="preload"
+      as="font"
+      type="font/woff2"
+      href="/fonts/be-vietnam-pro-900-vietnamese.woff2"
+      crossorigin
     />
   </head>
   <body>

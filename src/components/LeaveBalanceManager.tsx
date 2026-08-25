@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { API_BASE } from '../utils/api';
 import * as XLSX from 'xlsx';
 
 interface LeaveBalanceRow {
@@ -112,7 +113,7 @@ export default function LeaveBalanceManager({ staffList, onAlert, workshopId }: 
 
       if (parsed.length === 0) throw new Error('Không đọc được dòng nhân viên nào.');
 
-      const res = await fetch('/api/leave/employees/import', {
+      const res = await fetch(API_BASE + '/api/leave/employees/import', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ rows: parsed, workshopId })
@@ -166,7 +167,7 @@ export default function LeaveBalanceManager({ staffList, onAlert, workshopId }: 
 
     setIsSaving(true);
     try {
-      const res = await fetch('/api/leave/balances', {
+      const res = await fetch(API_BASE + '/api/leave/balances', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, year: formYear, entitled: formEntitled, workshopId })
@@ -192,7 +193,7 @@ export default function LeaveBalanceManager({ staffList, onAlert, workshopId }: 
       return;
     }
     try {
-      const res = await fetch('/api/leave/balances/delete', {
+      const res = await fetch(API_BASE + '/api/leave/balances/delete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: row.name, year: row.year, workshopId })

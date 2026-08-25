@@ -2255,15 +2255,19 @@ export default function App() {
                   {isSavingLeaveToSheets ? 'Đang lưu đơn...' : 'Lưu đơn & Tải xuống Word'}
                 </button>
               ) : (
-                <button 
-                  className="btn btn-primary flex items-center justify-center gap-1.5" 
-                  onClick={() => {
-                    handleExportAllZipAndUpdateStatus();
+                // Downloads the shift schedule on its own. Bundling the leave request
+                // documents alongside it lives on the dedicated "Tạo lịch thay ca và các
+                // đơn nghỉ phép" button instead, because that one also flips the selected
+                // requests to "Đã xử lý" — a side effect nobody expects from a preview.
+                <button
+                  className="btn btn-primary flex items-center justify-center gap-1.5"
+                  onClick={async () => {
+                    await handleExportWord();
                     setShowPreview(false);
                   }}
                   disabled={isProcessing}
                 >
-                  {isProcessing ? <span className="spin spinw mr-2"></span> : '🎁'} Tạo lịch thay ca và các đơn nghỉ phép
+                  {isProcessing ? <span className="spin spinw mr-2"></span> : '📥'} Tải xuống Word
                 </button>
               )}
             </div>

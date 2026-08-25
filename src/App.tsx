@@ -1,12 +1,17 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import mammoth from 'mammoth';
+import * as XLSX from 'xlsx';
 import { DEFAULT_STAFF, SHIFTS } from './constants';
 import { fmtVN, fmtIn, dayN, timNghi, timThay, abbrev, xacDinhCa } from './utils/shiftHelpers';
 import { buildMultiLeaveResults, Leave, ResultItem } from './utils/Quytacxacdinhcatructhay';
 import { exportWord, generateWordBlob, exportSwapDoc, generateSwapBlob, exportLeaveRequestDoc, generateLeaveRequestBlob, exportAllDocsZip } from './utils/wordExport';
 import { renderAsync } from 'docx-preview';
 import SignatureManager from './components/SignatureManager';
-import { Trash2 } from 'lucide-react';
+import LeaveBalanceManager from './components/LeaveBalanceManager';
+import LoginForm from './components/LoginForm';
+import WorkshopManagerModal from './components/WorkshopManagerModal';
+import { UserAccount, Workshop } from './types/auth';
+import { Trash2, Settings, LogOut, User } from 'lucide-react';
 
 export default function App() {
   const [staffData, setStaffData] = useState<string[][]>(() => {
@@ -51,10 +56,26 @@ export default function App() {
   const [kipNghi, setKipNghi] = useState('');
   const [additionalLeaves, setAdditionalLeaves] = useState<{ kip: string, start: string, end: string, chucDanh: string }[]>([]);
   const [showStaff, setShowStaff] = useState(true);
+  // Collapsed by default: the table can run to dozens of rows and pushes the rest of
+  // the staff tab off-screen, so it opens only when someone asks for it.
+  const [showLeaveBalance, setShowLeaveBalance] = useState(false);
   const [alert, setAlert] = useState<string | null>(null);
   const [currentResult, setCurrentResult] = useState<any>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
+  // The footer already has a "back to top" control, but reaching it means scrolling to
+  // the very bottom — the opposite of what someone deep in a long page wants. This one
+  // follows the viewport instead.
+  const [showScrollTop, setShowScrollTop] = useState(false);
+
+  useEffect(() => {
+    // Roughly one hero image down: far enough that the header is gone and the button
+    // is actually useful, close enough that it appears as soon as scrolling starts.
+    const onScroll = () => setShowScrollTop(window.scrollY > 240);
+    onScroll();
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, []);
   const [previewBlob, setPreviewBlob] = useState<Blob | null>(null);
   const previewRef = useRef<HTMLDivElement>(null);
   const [isParsing, setIsParsing] = useState(false);
@@ -62,12 +83,109 @@ export default function App() {
     soVanBan: '',
     ngayKy: '',
     nguoiKy: 'Nguyễn Văn Nghị',
-    zaloWebhookUrl: 'https://vhialy.dpdns.org/webhook/notify'
+    zaloWebhookUrl: 'https://vhialy.dpdns.org/webhook/notify',
+    notifyEmail: ''
   });
 
-  const [isGoogleAuth, setIsGoogleAuth] = useState(false);
-  const [loadingAuth, setLoadingAuth] = useState(true);
-  const [isUpdatingSheets, setIsUpdatingSheets] = useState(false);
+  // Login / workshop-admin system (LoginForm, UserHeaderBar, WorkshopManagerModal)
+  const [currentUser, setCurrentUser] = useState<UserAccount | null>(() => {
+    try {
+      const saved = localStorage.getItem('auth_user');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [workshops, setWorkshops] = useState<Workshop[]>([]);
+  const [activeWorkshop, setActiveWorkshop] = useState<Workshop | null>(null);
+  const [showWorkshopManager, setShowWorkshopManager] = useState(false);
+  // Which workshop the in-memory staffData/config were loaded from. staffData is
+  // seeded from localStorage on first render, so before the active workshop has been
+  // read into state it holds whatever the previous session left behind — autosaving
+  // that would overwrite the real roster with stale (often empty) data.
+  const [hydratedWsId, setHydratedWsId] = useState<string | null>(null);
+
+  // localStorage only remembers who was logged in so the UI can render immediately;
+  // it is not proof of anything. The httpOnly session cookie is the real credential,
+  // so ask the server who we actually are and drop the stale user if it disagrees.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/auth/me');
+        if (cancelled) return;
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.user) {
+            localStorage.setItem('auth_user', JSON.stringify(data.user));
+            setCurrentUser(data.user);
+            return;
+          }
+        }
+        localStorage.removeItem('auth_user');
+        setCurrentUser(null);
+      } catch {
+        // Network failure: leave the cached user in place rather than logging the
+        // operator out mid-shift. Any real API call will still be rejected with 401.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Once the cookie expires every request starts failing with 401. Catch that in one
+  // place instead of at each of the ~30 call sites, and send the user back to login.
+  useEffect(() => {
+    const original = window.fetch;
+    window.fetch = async (...args) => {
+      const res = await original(...args);
+      const url = typeof args[0] === 'string' ? args[0] : (args[0] as Request)?.url || '';
+      if (res.status === 401 && url.includes('/api/') && !url.includes('/api/auth/')) {
+        localStorage.removeItem('auth_user');
+        setCurrentUser(null);
+      }
+      return res;
+    };
+    return () => { window.fetch = original; };
+  }, []);
+
+  const fetchWorkshops = useCallback(async () => {
+    try {
+      const res = await fetch('/api/workshops');
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        setWorkshops(data);
+        setActiveWorkshop(prev => {
+          if (prev) {
+            const stillExists = data.find((w: Workshop) => w.id === prev.id);
+            if (stillExists) return stillExists;
+          }
+          if (!currentUser) return null;
+          if (currentUser.role === 'super_admin') return data[0] || null;
+          return data.find((w: Workshop) => w.id === currentUser.workshopId) || null;
+        });
+      }
+    } catch (e) {
+      console.error('Failed to load workshops', e);
+    }
+  }, [currentUser]);
+
+  useEffect(() => {
+    if (currentUser) fetchWorkshops();
+  }, [currentUser, fetchWorkshops]);
+
+  const handleLoginSuccess = (user: UserAccount) => {
+    setCurrentUser(user);
+  };
+
+  const handleLogout = () => {
+    fetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
+    localStorage.removeItem('auth_user');
+    setCurrentUser(null);
+    setWorkshops([]);
+    setActiveWorkshop(null);
+    setShowWorkshopManager(false);
+  };
+
   const [signatures, setSignatures] = useState<Record<string, string>>({});
   const [showSignatureManager, setShowSignatureManager] = useState(false);
   const [isSettingsLoaded, setIsSettingsLoaded] = useState(false);
@@ -93,9 +211,22 @@ export default function App() {
     reason: 'Giải quyết việc riêng gia đình',
     phone: '',
     leaveYear: String(new Date().getFullYear()),
-    location: 'Gia Lai'
+    location: 'Gia Lai',
+    hasLeavePermit: false
   });
   const [isPreviewingLeave, setIsPreviewingLeave] = useState(false);
+
+  // Travel-day allowance (ngày đi đường) based on distance from Pleiku
+  const [locationOptions, setLocationOptions] = useState<{ name: string; distanceKm: number }[]>([]);
+
+  // Server-computed plan: shifts consumed, which leave year(s) they are charged to, travel days
+  const [leavePlan, setLeavePlan] = useState<{
+    leaveDays: number;
+    leaveYear: string;
+    allocations: Record<string, number>;
+    detail: { date: string; shift: string; year: string }[];
+    travel: { travelDays: number; distanceKm: number | null; note: string };
+  } | null>(null);
 
   // States for Staff Leave Balance from Google Sheets
   const [leaveBalance, setLeaveBalance] = useState<{ entitled: string; used: string; remaining: string } | null>(null);
@@ -103,7 +234,7 @@ export default function App() {
   const [leaveBalanceError, setLeaveBalanceError] = useState<string | null>(null);
 
   const fetchLeaveBalance = useCallback(async (name: string) => {
-    if (!name || name.trim() === '') {
+    if (!name || name.trim() === '' || !activeWorkshop) {
       setLeaveBalance(null);
       setLeaveBalanceError(null);
       return;
@@ -111,7 +242,7 @@ export default function App() {
     setIsLoadingLeaveBalance(true);
     setLeaveBalanceError(null);
     try {
-      const res = await fetch(`/api/sheets/leave-balance?name=${encodeURIComponent(name.trim())}`);
+      const res = await fetch(`/api/sheets/leave-balance?name=${encodeURIComponent(name.trim())}&workshopId=${encodeURIComponent(activeWorkshop.id)}`);
       const data = await res.json();
       if (res.ok && data.success) {
         setLeaveBalance({
@@ -129,7 +260,7 @@ export default function App() {
     } finally {
       setIsLoadingLeaveBalance(false);
     }
-  }, []);
+  }, [activeWorkshop]);
 
   useEffect(() => {
     const nameStr = (leaveData.name || '').trim();
@@ -144,11 +275,67 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [leaveData.name, fetchLeaveBalance]);
 
-  // Google Sheets Leave Queues States
+  useEffect(() => {
+    fetch('/api/leave/locations')
+      .then(res => res.json())
+      .then(data => { if (Array.isArray(data)) setLocationOptions(data); })
+      .catch(() => {});
+  }, []);
+
+  // The server decides how many shifts the leave costs and which leave year pays for them
+  useEffect(() => {
+    if (!leaveData.startDate || !leaveData.endDate || !leaveData.kip || !activeWorkshop) {
+      setLeavePlan(null);
+      return;
+    }
+    const timer = setTimeout(() => {
+      const params = new URLSearchParams({
+        name: leaveData.name || '',
+        kip: leaveData.kip,
+        startDate: leaveData.startDate,
+        endDate: leaveData.endDate,
+        location: leaveData.location || '',
+        hasLeavePermit: String(leaveData.hasLeavePermit),
+        workshopId: activeWorkshop.id
+      });
+      fetch(`/api/leave/plan?${params.toString()}`)
+        .then(res => res.json())
+        .then(data => { if (data.success) setLeavePlan(data); })
+        .catch(() => {});
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [leaveData.name, leaveData.kip, leaveData.startDate, leaveData.endDate, leaveData.location, leaveData.hasLeavePermit, activeWorkshop?.id]);
+
+  // Keep the printed "Chế độ phép năm" in step with the year the server charged the leave to
+  useEffect(() => {
+    if (leavePlan?.leaveYear && leavePlan.leaveYear !== leaveData.leaveYear) {
+      setLeaveData(prev => ({ ...prev, leaveYear: leavePlan.leaveYear }));
+    }
+  }, [leavePlan?.leaveYear]);
+
+  // Leave request queues (backed by Supabase, not Google Sheets despite the name)
   const [waitingLeaves, setWaitingLeaves] = useState<any[]>([]);
+  const [allLeaves, setAllLeaves] = useState<any[]>([]);
   const [isLoadingWaitingLeaves, setIsLoadingWaitingLeaves] = useState(false);
   const [selectedWaitingLeaveIds, setSelectedWaitingLeaveIds] = useState<string[]>([]);
   const [isSavingLeaveToSheets, setIsSavingLeaveToSheets] = useState(false);
+
+  // "Bảng duyệt nghỉ phép" report: leaves already scheduled (status != Chờ phân ca)
+  const [approvedSearch, setApprovedSearch] = useState('');
+  const [approvedYearFilter, setApprovedYearFilter] = useState('all');
+  const approvedLeaves = useMemo(() => {
+    const processed = allLeaves.filter(l => l.status !== 'Chờ phân ca');
+    const q = approvedSearch.trim().toLowerCase();
+    return processed.filter(l => {
+      const matchesSearch = !q || l.name.toLowerCase().includes(q) || (l.chucDanh || '').toLowerCase().includes(q);
+      const matchesYear = approvedYearFilter === 'all' || l.leaveYear === approvedYearFilter;
+      return matchesSearch && matchesYear;
+    });
+  }, [allLeaves, approvedSearch, approvedYearFilter]);
+  const approvedYearOptions = useMemo(() => {
+    const years = new Set(allLeaves.filter(l => l.status !== 'Chờ phân ca').map(l => l.leaveYear).filter(Boolean));
+    return Array.from(years).sort();
+  }, [allLeaves]);
   const [confirmModal, setConfirmModal] = useState<{
     isOpen: boolean;
     title: string;
@@ -162,7 +349,16 @@ export default function App() {
   } | null>(null);
   const [confirmPassword, setConfirmPassword] = useState("");
   const [passwordError, setPasswordError] = useState("");
-  const [activeTab, setActiveTab] = useState<'schedule' | 'leave' | 'swap' | 'staff'>('schedule');
+  const [activeTab, setActiveTab] = useState<'schedule' | 'leave' | 'swap' | 'lookup' | 'staff' | 'auth'>('schedule');
+
+  // A super admin's nav only offers "Tài khoản"; the schedule/leave/swap/staff tabs are
+  // hidden for them. Without this they would sit on the default 'schedule' tab with no
+  // button highlighted, seeing content the nav claims does not exist.
+  useEffect(() => {
+    if (currentUser?.role === 'super_admin' && activeTab !== 'auth') {
+      setActiveTab('auth');
+    }
+  }, [currentUser?.role, activeTab]);
 
   const closeConfirmModal = () => {
     setConfirmModal(null);
@@ -182,108 +378,125 @@ export default function App() {
     closeConfirmModal();
   };
 
+
+  // WorkshopManagerModal writes the same four fields this component keeps in `config`,
+  // and it saves under the *same* workshop id. Keying the re-sync below on the id alone
+  // would leave `config`/`staffData` holding pre-modal values, which the debounced save
+  // would then write straight back over the modal's edits. Key on the content instead so
+  // any change coming back from the server is picked up.
+  const wsConfigKey = activeWorkshop
+    ? JSON.stringify([
+        activeWorkshop.config?.soVanBan,
+        activeWorkshop.config?.ngayKy,
+        activeWorkshop.config?.nguoiKy,
+        activeWorkshop.config?.zaloWebhookUrl,
+        activeWorkshop.config?.notifyEmail
+      ])
+    : '';
+  const wsStaffKey = activeWorkshop ? JSON.stringify(activeWorkshop.staffData || []) : '';
+
   useEffect(() => {
-    const checkAuth = async () => {
-      setLoadingAuth(true);
-      try {
-        const res = await fetch('/api/auth/status');
-        const data = await res.json();
-        setIsGoogleAuth(data.authenticated);
-      } catch (e) {
-        console.error("Auth check failed", e);
-      } finally {
-        setLoadingAuth(false);
-      }
-    };
-    checkAuth();
+    if (!activeWorkshop?.config) return;
+    setConfig(prev => ({
+      ...prev,
+      soVanBan: activeWorkshop.config.soVanBan ?? '',
+      ngayKy: activeWorkshop.config.ngayKy || '',
+      nguoiKy: activeWorkshop.config.nguoiKy || 'Nguyễn Văn Nghị',
+      zaloWebhookUrl: activeWorkshop.config.zaloWebhookUrl || 'https://vhialy.dpdns.org/webhook/notify',
+      notifyEmail: activeWorkshop.config.notifyEmail || ''
+    }));
+  }, [activeWorkshop?.id, wsConfigKey]);
 
-    const handleMessage = (e: MessageEvent) => {
-      if (e.data?.type === 'OAUTH_AUTH_SUCCESS') {
-        setIsGoogleAuth(true);
-        setAlert('✅ Kết nối Google thành công!');
-      }
-    };
-    window.addEventListener('message', handleMessage);
+  // `config` only ever carries the 5 fields editable from the leave-request form
+  // (soVanBan/ngayKy/nguoiKy/zaloWebhookUrl/notifyEmail) — it never gained
+  // companyName/headerWorkshopName/documentCodeSuffix/recipientWorkshopName/
+  // shortWorkshopName, the fields that actually make one workshop's exported Word
+  // documents look different from another's. Every export call used to pass bare
+  // `config`, so wordExport.ts's internal fallback defaults (hardcoded to Ialy) fired
+  // for every workshop — Ialy happened to match them, so this only became visible once
+  // a second workshop was created. Word exports should use this merged object instead.
+  const docConfig = { ...activeWorkshop?.config, ...config };
 
-    // Fetch cloud settings on mount
-    const fetchSettings = async () => {
-      try {
-        // Fetch app settings
-        const res = await fetch('/api/app-settings');
-        const data = await res.json();
-        if (data.staffData && Array.isArray(data.staffData)) {
-          const migrated = data.staffData.map((row: any) => {
-            if (Array.isArray(row) && row[0] === 'Trực phụ cơ MR') {
-              return ['Trực phụ máy MR', ...row.slice(1)];
-            }
-            return row;
-          });
-          setStaffData(migrated);
-          localStorage.setItem('sd', JSON.stringify(migrated));
-        }
-        if (data.config) {
-          setConfig({
-            soVanBan: data.config.soVanBan || '',
-            ngayKy: data.config.ngayKy || '',
-            nguoiKy: data.config.nguoiKy || 'Nguyễn Văn Nghị',
-            zaloWebhookUrl: data.config.zaloWebhookUrl || 'https://vhialy.dpdns.org/webhook/notify'
-          });
-        }
-
-        // Fetch signatures
-        const sigRes = await fetch('/api/signatures');
-        const sigData = await sigRes.json();
-        setSignatures(sigData);
-
-        setIsSettingsLoaded(true);
-      } catch (e) {
-        console.error("Failed to fetch app settings", e);
-        setIsSettingsLoaded(true);
-      }
-    };
-    fetchSettings();
-
-    return () => window.removeEventListener('message', handleMessage);
-  }, []);
-
-  // Save settings to cloud whenever they change (debounced)
   useEffect(() => {
-    if (!isSettingsLoaded) return;
-    
+    if (!activeWorkshop) return;
+    // A freshly created workshop has no staff yet. Bailing out here would leave the
+    // previous workshop's roster in state, which the debounced save would then write
+    // into the new workshop — so clear it instead and let the admin fill it in.
+    if (!Array.isArray(activeWorkshop.staffData) || activeWorkshop.staffData.length === 0) {
+      setStaffData([]);
+      localStorage.setItem('sd', JSON.stringify([]));
+      setHydratedWsId(activeWorkshop.id);
+      return;
+    }
+    const migrated = activeWorkshop.staffData.map((row: any) => {
+      if (Array.isArray(row) && row[0] === 'Trực phụ cơ MR') {
+        return ['Trực phụ máy MR', ...row.slice(1)];
+      }
+      return row;
+    });
+    setStaffData(migrated);
+    localStorage.setItem('sd', JSON.stringify(migrated));
+    setHydratedWsId(activeWorkshop.id);
+  }, [activeWorkshop?.id, wsStaffKey]);
+
+  // Signatures are per workshop, so they only need refetching when the workshop changes.
+  useEffect(() => {
+    if (!activeWorkshop) return;
+    fetch(`/api/signatures?workshopId=${encodeURIComponent(activeWorkshop.id)}`)
+      .then(res => res.json())
+      .then(data => setSignatures(data))
+      .catch(e => console.error("Failed to fetch signatures", e))
+      .finally(() => setIsSettingsLoaded(true));
+  }, [activeWorkshop?.id]);
+
+  // Save staff list / config back onto the active workshop's row (debounced), instead
+  // of the old single global app_config.
+  useEffect(() => {
+    if (!isSettingsLoaded || !activeWorkshop) return;
+    // Never write state that belongs to a different workshop (or to no workshop yet).
+    if (hydratedWsId !== activeWorkshop.id) return;
+
     const saveSettings = async () => {
       try {
-        await fetch('/api/app-settings', {
+        await fetch('/api/workshops', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ staffData, config })
+          body: JSON.stringify({
+            id: activeWorkshop.id,
+            name: activeWorkshop.name,
+            code: activeWorkshop.code,
+            description: activeWorkshop.description,
+            features: activeWorkshop.features,
+            staffData,
+            config: { ...activeWorkshop.config, ...config }
+          })
         });
       } catch (e) {
-        console.error("Failed to save app settings", e);
+        console.error("Failed to save workshop settings", e);
       }
     };
-    
+
     const timer = setTimeout(saveSettings, 3000);
     return () => clearTimeout(timer);
-  }, [staffData, config, isSettingsLoaded]);
+  }, [staffData, config, isSettingsLoaded, activeWorkshop, hydratedWsId]);
 
   const fetchWaitingLeaves = useCallback(async () => {
+    if (!activeWorkshop) return;
     setIsLoadingWaitingLeaves(true);
     try {
-      const res = await fetch('/api/sheets/leave-requests');
+      const res = await fetch(`/api/sheets/leave-requests?workshopId=${encodeURIComponent(activeWorkshop.id)}`);
       if (res.ok) {
         const data = await res.json();
         const mappedData = data.map((item: any) => ({
           ...item,
           chucDanh: item.chucDanh === 'Trực phụ cơ MR' ? 'Trực phụ máy MR' : item.chucDanh
         }));
+        setAllLeaves(mappedData);
         const waiting = mappedData.filter((item: any) => item.status === 'Chờ phân ca');
         setWaitingLeaves(waiting);
         // Clear selected if they no longer exist in waiting
         setSelectedWaitingLeaveIds(prev => prev.filter(id => waiting.some((w: any) => w.id === id)));
       } else {
-        if (res.status === 401) {
-          setIsGoogleAuth(false);
-        }
         console.error("Failed to fetch leave requests");
       }
     } catch (e) {
@@ -291,130 +504,11 @@ export default function App() {
     } finally {
       setIsLoadingWaitingLeaves(false);
     }
-  }, []);
+  }, [activeWorkshop]);
 
   useEffect(() => {
     fetchWaitingLeaves();
   }, [fetchWaitingLeaves]);
-
-  const handleConnectGoogle = () => {
-    const width = 500, height = 600;
-    const left = (window.innerWidth - width) / 2;
-    const top = (window.innerHeight - height) / 2;
-    window.open('/api/auth/google', 'google-auth', `width=${width},height=${height},left=${left},top=${top}`);
-  };
-
-  const getSheetsUpdates = (resObj: any) => {
-    if (!resObj) return [];
-    const updateMap: Record<string, string> = {}; // key: "name|date"
-
-    // 1. Process all leaves (Absent people)
-    resObj.allResults.forEach((res: any) => {
-      const start = new Date(res.start);
-      const end = new Date(res.end);
-      let d = new Date(start);
-      while (d <= end) {
-        const dateStr = fmtIn(d);
-        const originalShift = xacDinhCa(d, res.kip);
-        // Only change N, C, K to F. Keep O as O.
-        const finalShift = (originalShift === 'N' || originalShift === 'C' || originalShift === 'K') ? 'F' : originalShift;
-        
-        if (!res.ten.includes('THIẾU NHÂN SỰ')) {
-          const name = res.ten.trim().normalize('NFC');
-          updateMap[`${name}|${dateStr}`] = finalShift;
-        }
-        d.setDate(d.getDate() + 1);
-      }
-
-      // 2. Process specific assignments for each leave
-      res.ketQua.forEach((item: any) => {
-        const dateStr = fmtIn(new Date(item.ngay));
-        
-        // Replacement person works the shift
-        if (item.nguoitructhay && item.nguoitructhay !== 'N/A' && !item.nguoitructhay.includes('THIẾU NHÂN SỰ')) {
-          const name = item.nguoitructhay.trim().normalize('NFC');
-          updateMap[`${name}|${dateStr}`] = item.ca;
-        }
-
-        // If it's a CK Swap, the absent person works the other shift
-        if (item.isCKSwap && item.swapAbsentTen && !item.swapAbsentTen.includes('THIẾU NHÂN SỰ')) {
-          const name = item.swapAbsentTen.trim().normalize('NFC');
-          const absentShift = xacDinhCa(new Date(item.ngay), item.kiptructhay);
-          updateMap[`${name}|${dateStr}`] = absentShift;
-        }
-
-        // If someone is relieved
-        if (item.relievedTen && !item.relievedTen.includes('THIẾU NHÂN SỰ')) {
-          const name = item.relievedTen.trim().normalize('NFC');
-          updateMap[`${name}|${dateStr}`] = 'O';
-        }
-      });
-    });
-
-    // 3. Process extraRows (Additional adjustments)
-    resObj.extraRows.forEach((row: any) => {
-      const dateStr = fmtIn(new Date(row.ngay));
-      
-      if (row.nguoitructhay && row.nguoitructhay !== 'N/A' && !row.nguoitructhay.includes('THIẾU NHÂN SỰ')) {
-        const name = row.nguoitructhay.trim().normalize('NFC');
-        updateMap[`${name}|${dateStr}`] = row.ca;
-      }
-      
-      if (row.relievedTen && !row.relievedTen.includes('THIẾU NHÂN SỰ')) {
-        const name = row.relievedTen.trim().normalize('NFC');
-        updateMap[`${name}|${dateStr}`] = 'O';
-      }
-
-      if (row.absentTen && !row.absentTen.includes('THIẾU NHÂN SỰ')) {
-        const name = row.absentTen.trim().normalize('NFC');
-        // Only set to F if not already assigned a working shift (like in a swap)
-        const currentVal = updateMap[`${name}|${dateStr}`];
-        if (!currentVal || currentVal === 'F') {
-          const originalShift = xacDinhCa(new Date(row.ngay), row.absentKip);
-          const finalShift = (originalShift === 'N' || originalShift === 'C' || originalShift === 'K') ? 'F' : originalShift;
-          updateMap[`${name}|${dateStr}`] = finalShift;
-        }
-      }
-    });
-
-    return Object.entries(updateMap).map(([key, shift]) => {
-      const [name, date] = key.split('|');
-      return { name, date, shift };
-    });
-  };
-
-  const updateGoogleSheets = async () => {
-    if (!isGoogleAuth || !currentResult) return;
-    setIsUpdatingSheets(true);
-    try {
-      const updates = getSheetsUpdates(currentResult);
-
-      console.log("Sending updates to Google Sheets:", updates);
-
-      const res = await fetch('/api/sheets/update', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          spreadsheetId: '1HgGW-FvoGQXtj7V_JCMD-7Tuue0rTIM-bmohGmgqm6I',
-          updates
-        })
-      });
-      const data = await res.json();
-      if (data.success) {
-        setAlert('✅ Đã cập nhật vào bảng theo dõi cơm ca');
-      } else {
-        if (res.status === 401) {
-          setIsGoogleAuth(false);
-        }
-        setAlert('⚠ Lỗi cập nhật Google Sheets: ' + (data.error || 'Unknown error'));
-      }
-    } catch (e) {
-      console.error(e);
-      setAlert('⚠ Lỗi kết nối Google Sheets');
-    } finally {
-      setIsUpdatingSheets(false);
-    }
-  };
 
   const handleUpdateStaff = (r: number, c: number, val: string) => {
     const newData = [...staffData];
@@ -671,10 +765,7 @@ export default function App() {
 
   const handleExportWord = async () => {
     setIsProcessing(true);
-    await exportWord(currentResult, config);
-    if (isGoogleAuth) {
-      await updateGoogleSheets();
-    }
+    await exportWord(currentResult, docConfig);
     setIsProcessing(false);
   };
 
@@ -691,7 +782,7 @@ export default function App() {
 
   const handlePreviewWord = async () => {
     setIsProcessing(true);
-    const blob = await generateWordBlob(currentResult, config);
+    const blob = await generateWordBlob(currentResult, docConfig);
     if (blob) {
       setPreviewBlob(blob);
       setIsPreviewingSwap(false);
@@ -703,7 +794,7 @@ export default function App() {
 
   const handlePreviewSwap = async () => {
     setIsProcessing(true);
-    const blob = await generateSwapBlob(swapData, config, signatures);
+    const blob = await generateSwapBlob(swapData, docConfig, signatures);
     if (blob) {
       setPreviewBlob(blob);
       setIsPreviewingSwap(true);
@@ -715,7 +806,7 @@ export default function App() {
 
   const handlePreviewLeave = async () => {
     setIsProcessing(true);
-    const blob = await generateLeaveRequestBlob(leaveData, config, signatures);
+    const blob = await generateLeaveRequestBlob(leaveData, docConfig, signatures);
     if (blob) {
       setPreviewBlob(blob);
       setIsPreviewingSwap(false);
@@ -727,7 +818,10 @@ export default function App() {
 
   const handleExportLeave = async () => {
     setIsProcessing(true);
-    await exportLeaveRequestDoc(leaveData, config, signatures);
+    // Saving to the waiting-schedule queue happens automatically before the download,
+    // so there's no separate "Lưu lên hệ thống" step for the user to remember.
+    await saveLeaveToGoogleSheets();
+    await exportLeaveRequestDoc(leaveData, docConfig, signatures);
     setIsProcessing(false);
   };
 
@@ -736,10 +830,15 @@ export default function App() {
       setAlert("⚠ Vui lòng nhập Họ và tên người xin nghỉ.");
       return;
     }
+    if (!activeWorkshop) {
+      setAlert("⚠ Chưa chọn phân xưởng.");
+      return;
+    }
     setIsSavingLeaveToSheets(true);
     try {
       const payload = {
         ...leaveData,
+        workshopId: activeWorkshop.id,
         leaveBalance: leaveBalance ? {
           entitled: leaveBalance.entitled,
           used: leaveBalance.used,
@@ -757,9 +856,6 @@ export default function App() {
         fetchWaitingLeaves();
         setShowPreview(false);
       } else {
-        if (res.status === 401 || resData.auth_expired) {
-          setIsGoogleAuth(false);
-        }
         setAlert(`❌ Lưu đơn thất bại: ${resData.error || "Lỗi máy chủ"}`);
       }
     } catch (e: any) {
@@ -767,6 +863,46 @@ export default function App() {
     } finally {
       setIsSavingLeaveToSheets(false);
     }
+  };
+
+  const handleExportApprovedLeavesExcel = () => {
+    if (approvedLeaves.length === 0) {
+      setAlert('⚠ Không có đơn nào trong danh sách để xuất Excel.');
+      return;
+    }
+
+    const rows = approvedLeaves.map((l, idx) => ({
+      'STT': idx + 1,
+      'Họ và tên': l.name,
+      'Chức danh': l.chucDanh,
+      'Kíp': l.kip,
+      'Từ ngày': l.startDate ? fmtVN(new Date(l.startDate)) : '',
+      'Đến ngày': l.endDate ? fmtVN(new Date(l.endDate)) : '',
+      'Số ngày phép trừ': l.leaveDays ?? '',
+      'Phân bổ theo năm': Array.isArray(l.allocations) && l.allocations.length > 0
+        ? l.allocations.map((a: any) => `${a.days} ngày (${a.year})`).join(', ')
+        : '',
+      'Có lấy giấy phép': l.hasLeavePermit ? 'Có' : 'Không',
+      'Ngày đi đường': l.travelDays || 0,
+      'Lý do': l.reason,
+      'Địa điểm': l.location,
+      'Điện thoại': l.phone,
+      'Trạng thái': l.status,
+      'Ngày tạo đơn': l.createdAt
+    }));
+
+    const worksheet = XLSX.utils.json_to_sheet(rows);
+    worksheet['!cols'] = [
+      { wch: 5 }, { wch: 22 }, { wch: 16 }, { wch: 6 }, { wch: 11 }, { wch: 11 },
+      { wch: 15 }, { wch: 20 }, { wch: 14 }, { wch: 12 }, { wch: 28 }, { wch: 12 },
+      { wch: 13 }, { wch: 12 }, { wch: 18 }
+    ];
+
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Bang_duyet_nghi_phep');
+
+    const stamp = fmtVN(new Date()).replace(/\//g, '-');
+    XLSX.writeFile(workbook, `Bang_duyet_nghi_phep_${stamp}.xlsx`);
   };
 
   const applyWaitingLeavesToForm = () => {
@@ -799,12 +935,11 @@ export default function App() {
   };
 
   const handleDeleteWaitingLeaves = (ids: string[], isSingleName?: string) => {
-    if (!isGoogleAuth) return;
     if (ids.length === 0) return;
-    
-    const message = isSingleName 
-      ? `Bạn có chắc chắn muốn xóa đơn nghỉ phép của anh/chị "${isSingleName}" khỏi Google Sheets không?`
-      : `Bạn có chắc chắn muốn danh sách ${ids.length} đơn nghỉ phép đã chọn bị xóa vĩnh viễn khỏi Google Sheets?`;
+
+    const message = isSingleName
+      ? `Bạn có chắc chắn muốn xóa đơn nghỉ phép của anh/chị "${isSingleName}" không?`
+      : `Bạn có chắc chắn muốn danh sách ${ids.length} đơn nghỉ phép đã chọn bị xóa vĩnh viễn?`;
 
     setConfirmModal({
       isOpen: true,
@@ -822,7 +957,7 @@ export default function App() {
             headers: {
               'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ ids })
+            body: JSON.stringify({ ids, workshopId: activeWorkshop?.id })
           });
 
           if (res.ok) {
@@ -832,9 +967,6 @@ export default function App() {
             );
             setSelectedWaitingLeaveIds(prev => prev.filter(id => !ids.includes(id)));
             fetchWaitingLeaves();
-          } else if (res.status === 401) {
-            setIsGoogleAuth(false);
-            setAlert("⚠ Phiên kết nối Google Sheets đã hết hạn. Vui lòng kết nối lại tài khoản.");
           } else {
             const data = await res.json();
             setAlert(`❌ Xóa đơn thất bại: ${data.error || "Lỗi máy chủ"}`);
@@ -848,143 +980,36 @@ export default function App() {
     });
   };
 
-  const proceedExportAllZipAndUpdateStatus = async (shouldUpdateAnnualLeave: boolean) => {
+  const proceedExportAllZipAndUpdateStatus = async () => {
     if (!currentResult) return;
     setIsProcessing(true);
     try {
       const selectedLeavesData = waitingLeaves.filter(item => selectedWaitingLeaveIds.includes(item.id));
-      
+
       // 1. Download the ZIP file
-      await exportAllDocsZip(currentResult, selectedLeavesData, config, signatures);
-      
-      let isSheetSynced = false;
-      let sheetSyncError = "";
+      await exportAllDocsZip(currentResult, selectedLeavesData, docConfig, signatures);
 
-      // 2. Clear/Synchronize schedule & meal reports if authenticated
-      if (isGoogleAuth) {
-        try {
-          const updates = getSheetsUpdates(currentResult);
-          if (updates.length > 0) {
-            const syncRes = await fetch('/api/sheets/update', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                spreadsheetId: '1HgGW-FvoGQXtj7V_JCMD-7Tuue0rTIM-bmohGmgqm6I',
-                updates
-              })
-            });
-            const syncData = await syncRes.json();
-            if (syncRes.ok && syncData.success) {
-              isSheetSynced = true;
-            } else {
-              sheetSyncError = syncData.error || "Lỗi máy chủ";
-            }
-          } else {
-            isSheetSynced = true; // No updates needed
-          }
-        } catch (syncErr: any) {
-          console.error("Auto-sync error:", syncErr);
-          sheetSyncError = syncErr.message;
-        }
-
-        // 2b. Write to "Số ngày phép" if requested
-        if (shouldUpdateAnnualLeave) {
-          try {
-            const getTongCaTrucPhaiThay = (resItem: any) => {
-              let dem = 0;
-              let ngaychao = new Date(resItem.start);
-              const ngayEnd = new Date(resItem.end);
-              while (ngaychao <= ngayEnd) {
-                const cahientai = xacDinhCa(ngaychao, resItem.kip);
-                if (cahientai !== 'O') dem++;
-                ngaychao.setDate(ngaychao.getDate() + 1);
-              }
-              return dem;
-            };
-
-            const updatesAnnualLeaves = currentResult.allResults
-              .filter((r: any) => r.ten && !r.ten.includes("THIẾU NHÂN SỰ"))
-              .map((r: any) => ({
-                name: r.ten,
-                tongcatrucphaithay: getTongCaTrucPhaiThay(r)
-              }));
-
-            if (updatesAnnualLeaves.length > 0) {
-              const annualRes = await fetch('/api/sheets/update-annual-leaves', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  spreadsheetId: '1pH1-Nj4B1nauoEfO5cZG13Wlk_UrUrFDq_eucf5a-IY',
-                  updates: updatesAnnualLeaves
-                })
-              });
-              const annualData = await annualRes.json();
-              if (annualRes.ok && annualData.success) {
-                let msg = "Ghi bảng theo dõi phép năm thành công!";
-                if (annualData.skippedNames && annualData.skippedNames.length > 0) {
-                  msg += ` (Không tìm thấy tên: ${annualData.skippedNames.join(', ')})`;
-                }
-                console.log(msg);
-              } else {
-                console.error("Lỗi ghi phép năm:", annualData.error);
-                sheetSyncError = (sheetSyncError ? sheetSyncError + "; " : "") + `Lỗi phép năm: ${annualData.error || "Không rõ"}`;
-              }
-            }
-          } catch (annualErr: any) {
-            console.error("Annual leave update error:", annualErr);
-            sheetSyncError = (sheetSyncError ? sheetSyncError + "; " : "") + `Lỗi phép năm: ${annualErr.message}`;
-          }
-        }
-      }
-
-      // 3. Update waiting leaves status to 'Đã xử lý'
+      // 2. Update waiting leaves status to 'Đã xử lý'
       if (selectedWaitingLeaveIds.length > 0) {
         const updateRes = await fetch('/api/sheets/leave-requests/update-status', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             ids: selectedWaitingLeaveIds,
-            status: "Đã xử lý"
+            status: "Đã xử lý",
+            workshopId: activeWorkshop?.id
           })
         });
-        
+
         if (updateRes.ok) {
-          if (isGoogleAuth) {
-            let detailMsg = "Hệ thống đã đồng bộ lịch mới và tự động ghi vào Bảng báo cơm ca.";
-            if (shouldUpdateAnnualLeave) {
-              detailMsg += " Đồng thời đã tự động ghi số ngày phép vào sheet Số ngày phép.";
-            }
-            if (sheetSyncError) {
-              setAlert(`🎁 Đã xuất ZIP & đổi trạng thái đơn thành 'Đã xử lý', nhưng gặp lỗi đồng bộ bảng: ${sheetSyncError}`);
-            } else {
-              setAlert(`🎁 Xuất trọn bộ file ZIP thành công! ${detailMsg} Trạng thái đơn chuyển thành 'Đã xử lý'.`);
-            }
-          } else {
-            setAlert("✅ Đã xuất trọn bộ hồ sơ dạng ZIP và cập nhật trạng thái 'Đã xử lý' lên Google Sheets!");
-          }
+          setAlert("✅ Đã xuất trọn bộ hồ sơ dạng ZIP và cập nhật trạng thái 'Đã xử lý'!");
           fetchWaitingLeaves();
         } else {
           const errData = await updateRes.json();
-          if (updateRes.status === 401 || errData.auth_expired) {
-            setIsGoogleAuth(false);
-          }
-          setAlert(`✅ Xuất hồ sơ thành công nhưng lỗi cập nhật trạng thái Google Sheets: ${errData.error || ""}`);
+          setAlert(`✅ Xuất hồ sơ thành công nhưng lỗi cập nhật trạng thái: ${errData.error || ""}`);
         }
       } else {
-        if (isGoogleAuth) {
-          let detailMsg = "đồng bộ lịch trực, tự động ghi vào Bảng báo cơm ca";
-          if (shouldUpdateAnnualLeave) {
-            detailMsg += " & cập nhật số ngày phép vào sheet Số ngày phép";
-          }
-          if (sheetSyncError) {
-            setAlert(`🎁 Đã xuất hồ sơ ZIP, nhưng gặp lỗi: ${sheetSyncError}`);
-          } else {
-            setAlert(`🎁 Đã xuất trọn bộ hồ sơ dạng ZIP, ${detailMsg} thành công!`);
-          }
-          setAlert(`🎁 Đã xuất trọn bộ hồ sơ dạng ZIP & ${detailMsg} thành công!`);
-        } else {
-          setAlert("✅ Đã tải xuống hồ sơ dạng ZIP thành công!");
-        }
+        setAlert("✅ Đã tải xuống hồ sơ dạng ZIP thành công!");
       }
     } catch (e: any) {
       console.error(e);
@@ -996,95 +1021,12 @@ export default function App() {
 
   const handleExportAllZipAndUpdateStatus = async () => {
     if (!currentResult) return;
-    
-    if (isGoogleAuth) {
-      setConfirmModal({
-        isOpen: true,
-        title: "Ghi vào Bảng theo dõi phép năm?",
-        message: "Bạn có muốn ghi số ngày nghỉ phép vào bảng theo dõi phép năm không",
-        confirmText: "Có, ghi bảng",
-        cancelText: "Không, bỏ qua",
-        onConfirm: () => {
-          proceedExportAllZipAndUpdateStatus(true);
-        },
-        onCancel: () => {
-          proceedExportAllZipAndUpdateStatus(false);
-        }
-      });
-    } else {
-      await proceedExportAllZipAndUpdateStatus(false);
-    }
-  };
-
-  const updateSwapGoogleSheets = async () => {
-    if (!isGoogleAuth || !swapData.person1 || !swapData.person2) return;
-    setIsUpdatingSheets(true);
-    try {
-      const updateMap: Record<string, string> = {}; // key: "name|date"
-
-      const p1 = swapData.person1.trim().normalize('NFC');
-      const p2 = swapData.person2.trim().normalize('NFC');
-
-      if (swapData.shift1 !== 'None' && swapData.shift2 !== 'None') {
-        if (swapData.date1 === swapData.date2) {
-          // Same day swap: P1 takes P2's shift, P2 takes P1's shift
-          updateMap[`${p1}|${swapData.date1}`] = swapData.shift2;
-          updateMap[`${p2}|${swapData.date1}`] = swapData.shift1;
-        } else {
-          // Different day swap
-          updateMap[`${p1}|${swapData.date1}`] = 'O';
-          updateMap[`${p1}|${swapData.date2}`] = swapData.shift2;
-          updateMap[`${p2}|${swapData.date1}`] = swapData.shift1;
-          updateMap[`${p2}|${swapData.date2}`] = 'O';
-        }
-      } else if (swapData.shift1 !== 'None' && swapData.shift2 === 'None') {
-        // P1 absent, P2 covers P1. P2 has no shift to give back.
-        updateMap[`${p1}|${swapData.date1}`] = 'O';
-        updateMap[`${p2}|${swapData.date1}`] = swapData.shift1;
-      } else if (swapData.shift1 === 'None' && swapData.shift2 !== 'None') {
-        // P2 absent, P1 covers P2. P1 has no shift to give back.
-        updateMap[`${p2}|${swapData.date2}`] = 'O';
-        updateMap[`${p1}|${swapData.date2}`] = swapData.shift2;
-      }
-
-      const updates = Object.entries(updateMap).map(([key, shift]) => {
-        const [name, date] = key.split('|');
-        return { name, date, shift };
-      });
-
-      console.log("Sending manual swap updates to Google Sheets:", updates);
-
-      const res = await fetch('/api/sheets/update', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          spreadsheetId: '1HgGW-FvoGQXtj7V_JCMD-7Tuue0rTIM-bmohGmgqm6I',
-          updates
-        })
-      });
-      const data = await res.json();
-      if (data.success) {
-        setAlert('✅ Đã cập nhật Google Sheets thành công cho Lịch Đổi Ca');
-      } else {
-        if (res.status === 401 || data.auth_expired) {
-          setIsGoogleAuth(false);
-        }
-        setAlert('⚠ Lỗi cập nhật Google Sheets: ' + (data.error || 'Unknown error'));
-      }
-    } catch (err) {
-      console.error(err);
-      setAlert('⚠ Lỗi kết nối Google Sheets');
-    } finally {
-      setIsUpdatingSheets(false);
-    }
+    await proceedExportAllZipAndUpdateStatus();
   };
 
   const handleExportSwap = async () => {
     setIsProcessing(true);
-    await exportSwapDoc(swapData, config, signatures);
-    if (isGoogleAuth) {
-      await updateSwapGoogleSheets();
-    }
+    await exportSwapDoc(swapData, docConfig, signatures);
     setIsProcessing(false);
   };
 
@@ -1176,71 +1118,126 @@ export default function App() {
     return (Math.max(...counts) - Math.min(...counts)) <= 1;
   };
 
+  // Everything below requires a logged-in account.
+  if (!currentUser) {
+    return <LoginForm onLoginSuccess={handleLoginSuccess} />;
+  }
+
+  const isSuperAdmin = currentUser.role === 'super_admin';
+  const isWorkshopAdmin = currentUser.role === 'workshop_admin';
+  const isAdmin = isSuperAdmin || isWorkshopAdmin;
+
   return (
     <div className="min-h-screen flex flex-col bg-[var(--bg)]">
+      {showWorkshopManager && (
+        <WorkshopManagerModal
+          user={currentUser}
+          workshops={workshops}
+          activeWorkshop={activeWorkshop}
+          onClose={() => setShowWorkshopManager(false)}
+          onRefreshWorkshops={fetchWorkshops}
+        />
+      )}
       {/* Top Navbar */}
-      <nav id="top-navbar" className="w-full bg-white border-b border-slate-200 py-3.5 px-4 md:px-8 shadow-sm flex flex-col lg:flex-row items-center justify-between gap-4 relative z-40">
-        <div className="flex flex-col sm:flex-row items-center gap-4">
-          {/* Logo container exactly like screenshot */}
+      <nav id="top-navbar" className="w-full bg-white border-b border-slate-200 py-2 px-3 md:py-3.5 md:px-8 shadow-md flex flex-col lg:flex-row items-center justify-between gap-2 lg:gap-4 sticky top-0 z-40">
+        <div className="flex flex-row items-center gap-2.5 sm:gap-4 w-full lg:w-auto">
+          {/* Logo container */}
           <div className="flex items-center select-none">
-            <img 
-              src="https://i.ibb.co/fYS7WtdB/LOGO.png" 
-              alt="EVN Công Ty Thủy Điện Ialy Logo" 
-              className="h-[48px] md:h-[54px] w-auto object-contain"
+            <img
+              src="https://i.ibb.co/r2BTySkt/2343.png"
+              alt="EVN Công Ty Thủy Điện Ialy Logo"
+              className="h-[32px] sm:h-[48px] md:h-[54px] w-auto object-contain shrink-0"
               referrerPolicy="no-referrer"
             />
           </div>
           {/* App Title with separator */}
-          <div className="text-[#053d6c] font-black text-lg md:text-xl font-sans tracking-tight sm:border-l sm:border-slate-200 sm:pl-4 py-1 flex items-center h-full">
-            Phân xưởng vận hành laly
+          <div className="border-l border-slate-200 pl-2.5 sm:pl-4 py-0.5 flex flex-col justify-center h-full text-left min-w-0">
+            <div className="text-[#053d6c] font-black text-[12px] sm:text-base md:text-xl font-sans tracking-tight leading-tight mt-0.5 truncate">
+              {activeWorkshop?.config?.companyName || 'CÔNG TY THỦY ĐIỆN IALY'}
+            </div>
+            <div className="text-[#053d6c] font-black text-[12px] sm:text-base md:text-xl font-sans tracking-tight leading-tight mt-0.5 truncate">
+              {activeWorkshop ? activeWorkshop.name : 'Phân xưởng Vận hành Ialy'}
+            </div>
           </div>
         </div>
 
         {/* Navigation Tabs on the Right */}
-        <div className="flex items-center gap-4 md:gap-7 flex-wrap justify-center">
+        <div className="nav-tabs flex items-center gap-4 md:gap-7 flex-nowrap overflow-x-auto w-full lg:w-auto lg:flex-wrap justify-start lg:justify-center">
+          {!isSuperAdmin && (
+            <>
+              <button
+                id="nav-schedule-btn"
+                className={`text-[12px] md:text-[15px] whitespace-nowrap shrink-0 font-bold uppercase transition-all cursor-pointer pb-1.5 border-b-2 outline-none ${
+                  activeTab === 'schedule'
+                    ? 'text-[#00529c] border-[#00529c] font-extrabold'
+                    : 'text-slate-500 hover:text-[#00529c] border-transparent hover:border-[#00529c]/50'
+                }`}
+                onClick={() => setActiveTab('schedule')}
+              >
+                Lịch trực thay ca vận hành
+              </button>
+              <button
+                id="nav-leave-btn"
+                className={`text-[12px] md:text-[15px] whitespace-nowrap shrink-0 font-bold uppercase transition-all cursor-pointer pb-1.5 border-b-2 outline-none ${
+                  activeTab === 'leave'
+                    ? 'text-[#00529c] border-[#00529c] font-extrabold'
+                    : 'text-slate-500 hover:text-[#00529c] border-transparent hover:border-[#00529c]/50'
+                }`}
+                onClick={() => setActiveTab('leave')}
+              >
+                Đơn xin nghỉ phép
+              </button>
+              <button
+                id="nav-swap-btn"
+                className={`text-[12px] md:text-[15px] whitespace-nowrap shrink-0 font-bold uppercase transition-all cursor-pointer pb-1.5 border-b-2 outline-none ${
+                  activeTab === 'swap'
+                    ? 'text-[#00529c] border-[#00529c] font-extrabold'
+                    : 'text-slate-500 hover:text-[#00529c] border-transparent hover:border-[#00529c]/50'
+                }`}
+                onClick={() => setActiveTab('swap')}
+              >
+                Đơn đổi ca
+              </button>
+              {!isWorkshopAdmin && (
+                <button
+                  id="nav-lookup-btn"
+                  className={`text-[12px] md:text-[15px] whitespace-nowrap shrink-0 font-bold uppercase transition-all cursor-pointer pb-1.5 border-b-2 outline-none ${
+                    activeTab === 'lookup'
+                      ? 'text-[#00529c] border-[#00529c] font-extrabold'
+                      : 'text-slate-500 hover:text-[#00529c] border-transparent hover:border-[#00529c]/50'
+                  }`}
+                  onClick={() => setActiveTab('lookup')}
+                >
+                  Tra cứu thông tin
+                </button>
+              )}
+            </>
+          )}
+
+          {isWorkshopAdmin && (
+            <button
+              id="nav-staff-btn"
+              className={`text-[12px] md:text-[15px] whitespace-nowrap shrink-0 font-bold uppercase transition-all cursor-pointer pb-1.5 border-b-2 outline-none ${
+                activeTab === 'staff'
+                  ? 'text-[#00529c] border-[#00529c] font-extrabold'
+                  : 'text-slate-500 hover:text-[#00529c] border-transparent hover:border-[#00529c]/50'
+              }`}
+              onClick={() => setActiveTab('staff')}
+            >
+              Nhân sự
+            </button>
+          )}
+
           <button
-            id="nav-schedule-btn"
-            className={`text-[12px] md:text-[13px] font-bold uppercase transition-all cursor-pointer pb-1.5 border-b-2 outline-none ${
-              activeTab === 'schedule'
+            id="nav-auth-btn"
+            className={`text-[12px] md:text-[15px] whitespace-nowrap shrink-0 font-bold uppercase transition-all cursor-pointer pb-1.5 border-b-2 outline-none ${
+              activeTab === 'auth'
                 ? 'text-[#00529c] border-[#00529c] font-extrabold'
                 : 'text-slate-500 hover:text-[#00529c] border-transparent hover:border-[#00529c]/50'
             }`}
-            onClick={() => setActiveTab('schedule')}
+            onClick={() => setActiveTab('auth')}
           >
-            Lịch trực thay ca vận hành
-          </button>
-          <button
-            id="nav-leave-btn"
-            className={`text-[12px] md:text-[13px] font-bold uppercase transition-all cursor-pointer pb-1.5 border-b-2 outline-none ${
-              activeTab === 'leave'
-                ? 'text-[#00529c] border-[#00529c] font-extrabold'
-                : 'text-slate-500 hover:text-[#00529c] border-transparent hover:border-[#00529c]/50'
-            }`}
-            onClick={() => setActiveTab('leave')}
-          >
-            Đơn xin nghỉ phép
-          </button>
-          <button
-            id="nav-swap-btn"
-            className={`text-[12px] md:text-[13px] font-bold uppercase transition-all cursor-pointer pb-1.5 border-b-2 outline-none ${
-              activeTab === 'swap'
-                ? 'text-[#00529c] border-[#00529c] font-extrabold'
-                : 'text-slate-500 hover:text-[#00529c] border-transparent hover:border-[#00529c]/50'
-            }`}
-            onClick={() => setActiveTab('swap')}
-          >
-            Đơn đổi ca
-          </button>
-          <button
-            id="nav-staff-btn"
-            className={`text-[12px] md:text-[13px] font-bold uppercase transition-all cursor-pointer pb-1.5 border-b-2 outline-none ${
-              activeTab === 'staff'
-                ? 'text-[#00529c] border-[#00529c] font-extrabold'
-                : 'text-slate-500 hover:text-[#00529c] border-transparent hover:border-[#00529c]/50'
-            }`}
-            onClick={() => setActiveTab('staff')}
-          >
-            Nhân sự
+            Tài khoản
           </button>
         </div>
       </nav>
@@ -1248,7 +1245,7 @@ export default function App() {
       {/* Hero Banner with beautiful high resolution background */}
       <div 
         id="hero-banner" 
-        className="w-full h-[220px] md:h-[280px] lg:h-[320px] relative bg-cover bg-center flex items-center justify-center overflow-hidden" 
+        className="w-full h-[120px] sm:h-[220px] md:h-[280px] lg:h-[320px] relative bg-cover bg-center flex items-center justify-center overflow-hidden" 
         style={{ 
           backgroundImage: "url('https://i.ibb.co/jZ6dDJzT/z7116558150434-802a4bd8dff3b332930235031b93fc49.jpg')",
           backgroundPosition: "center 42%"
@@ -1260,6 +1257,9 @@ export default function App() {
 
       {/* Container for Main Content */}
       <div className="wrap !pt-8 !pb-16 flex-1 w-full max-w-[1200px] mx-auto px-4 md:px-6">
+
+      {/* Shared notification: lives outside the tab blocks so every tab can report back */}
+      {alert && <div className={`alert ${alert.startsWith('✅') ? 'asuc' : 'aerr'}`}>{alert}</div>}
 
       {activeTab === 'leave' && (
         <>
@@ -1323,10 +1323,10 @@ export default function App() {
           </div>
           <div className="field">
             <label>Chế độ phép năm</label>
-            <input 
-              type="number" 
-              value={leaveData.leaveYear} 
-              onChange={e => setLeaveData({...leaveData, leaveYear: e.target.value})} 
+            <input
+              type="number"
+              value={leaveData.leaveYear}
+              onChange={e => setLeaveData({...leaveData, leaveYear: e.target.value})}
             />
           </div>
           <div className="field col-span-2">
@@ -1347,12 +1347,41 @@ export default function App() {
           </div>
           <div className="field">
             <label>Địa điểm</label>
-            <input 
-              type="text" 
-              value={leaveData.location} 
-              onChange={e => setLeaveData({...leaveData, location: e.target.value})} 
+            <input
+              type="text"
+              list="leave-location-list"
+              value={leaveData.location}
+              onChange={e => setLeaveData({...leaveData, location: e.target.value})}
             />
+            <datalist id="leave-location-list">
+              {locationOptions.map(loc => (
+                <option key={loc.name} value={loc.name}>{loc.distanceKm} km</option>
+              ))}
+            </datalist>
           </div>
+
+          <div className="field col-span-2">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={leaveData.hasLeavePermit}
+                onChange={e => setLeaveData({...leaveData, hasLeavePermit: e.target.checked})}
+                className="w-4 h-4 cursor-pointer"
+              />
+              Có lấy giấy phép (được tính ngày đi đường)
+            </label>
+          </div>
+
+          {/* Travel-day allowance feedback (kept visible; the shift/deduction breakdown above it is hidden) */}
+          {leavePlan && leaveData.hasLeavePermit && (
+            <div className="col-span-2 p-3 bg-slate-50 border border-slate-100 rounded-xl text-xs">
+              <div className={leavePlan.travel.travelDays > 0 ? 'text-emerald-800' : 'text-amber-700'}>
+                {leavePlan.travel.travelDays > 0
+                  ? <>🚗 Pleiku → {leaveData.location}: <b>{leavePlan.travel.distanceKm} km</b> — cộng thêm <b>{leavePlan.travel.travelDays} ngày đi đường</b> vào quỹ phép năm {leavePlan.leaveYear}.</>
+                  : <>⚠ {leavePlan.travel.note}</>}
+              </div>
+            </div>
+          )}
 
           {/* Leave Balance Box from Google Sheets */}
           <div className="col-span-2 mt-2 p-3 bg-slate-50 border border-slate-100 rounded-xl">
@@ -1376,15 +1405,15 @@ export default function App() {
             ) : leaveBalance ? (
               <div className="grid grid-cols-3 gap-2">
                 <div className="bg-blue-50/60 p-2.5 rounded-lg border border-blue-100 text-center">
-                  <div className="text-[10px] text-blue-700 font-medium uppercase">Phép được hưởng</div>
+                  <div className="text-[11px] text-blue-700 font-medium uppercase">Phép được hưởng</div>
                   <div className="text-lg font-extrabold text-blue-900 mt-0.5">{leaveBalance.entitled} <span className="text-xs font-normal">ngày</span></div>
                 </div>
                 <div className="bg-amber-50/60 p-2.5 rounded-lg border border-amber-100 text-center">
-                  <div className="text-[10px] text-amber-700 font-medium uppercase">Phép đã nghỉ</div>
+                  <div className="text-[11px] text-amber-700 font-medium uppercase">Phép đã nghỉ</div>
                   <div className="text-lg font-extrabold text-amber-900 mt-0.5">{leaveBalance.used} <span className="text-xs font-normal">ngày</span></div>
                 </div>
                 <div className="bg-emerald-50/60 p-2.5 rounded-lg border border-emerald-100 text-center">
-                  <div className="text-[10px] text-emerald-700 font-medium uppercase">Phép còn lại</div>
+                  <div className="text-[11px] text-emerald-700 font-medium uppercase">Phép còn lại</div>
                   <div className="text-lg font-extrabold text-emerald-900 mt-0.5">{leaveBalance.remaining} <span className="text-xs font-normal">ngày</span></div>
                 </div>
               </div>
@@ -1399,8 +1428,13 @@ export default function App() {
           <button className="btn btn-primary flex-1 min-w-[200px]" onClick={handlePreviewLeave} disabled={isProcessing || !leaveData.name}>
             {isProcessing ? <span className="spin mr-2"></span> : '📝'} Xem trước Đơn Nghỉ Phép
           </button>
-          <button className="btn btn-secondary flex-1 min-w-[150px]" onClick={handleExportLeave} disabled={!leaveData.name}>
-            📥 Xuất File Word
+          <button
+            className="btn btn-secondary flex-1 min-w-[150px]"
+            onClick={handleExportLeave}
+            disabled={isProcessing || isSavingLeaveToSheets || !leaveData.name}
+          >
+            {(isProcessing || isSavingLeaveToSheets) ? <span className="spin mr-2"></span> : '📥'}
+            {isSavingLeaveToSheets ? ' Đang lưu đơn...' : ' Lưu đơn & Xuất File Word'}
           </button>
         </div>
       </div>
@@ -1440,9 +1474,8 @@ export default function App() {
   Bảng báo cơm ca
 </button>
 </div>
-        {alert && <div className={`alert ${alert.startsWith('✅') ? 'asuc' : 'aerr'}`}>{alert}</div>}
-        
-        {isGoogleAuth && (
+
+        {(
           <div className="mb-6 p-4 border border-var(--acc-light) rounded-xl bg-var(--acc-light-5) hover:border-var(--acc) transition-all">
             <div className="flex items-center justify-between mb-3 border-b pb-2 border-var(--acc-light) flex-wrap gap-2">
               <div className="flex items-center gap-2">
@@ -1459,6 +1492,22 @@ export default function App() {
                 >
                   🔄 Cập nhật
                 </button>
+                {waitingLeaves.length > 0 && (
+                  <button
+                    className="px-2.5 py-1 text-xs bg-white text-var(--acc) border border-var(--acc-light) rounded hover:bg-var(--acc-light-10) font-medium cursor-pointer transition-colors"
+                    onClick={() => {
+                      // Toggle: once everything is already selected the same button clears
+                      // the selection, so there is no need for a second "bỏ chọn" control.
+                      const allIds = waitingLeaves.map(l => l.id);
+                      const allSelected = allIds.length > 0 && allIds.every(id => selectedWaitingLeaveIds.includes(id));
+                      setSelectedWaitingLeaveIds(allSelected ? [] : allIds);
+                    }}
+                  >
+                    {waitingLeaves.length > 0 && waitingLeaves.every(l => selectedWaitingLeaveIds.includes(l.id))
+                      ? '☐ Bỏ chọn tất cả'
+                      : `☑ Chọn tất cả (${waitingLeaves.length})`}
+                  </button>
+                )}
                 {selectedWaitingLeaveIds.length > 0 && (
                   <>
                     <button 
@@ -1479,7 +1528,7 @@ export default function App() {
             </div>
             
             {waitingLeaves.length === 0 ? (
-              <p className="text-[12px] text-var(--txt2) italic">Không có đơn xin nghỉ phép nào ở trạng thái Chờ phân ca trên Google Sheets.</p>
+              <p className="text-[12px] text-var(--txt2) italic">Không có đơn xin nghỉ phép nào ở trạng thái Chờ phân ca.</p>
             ) : (
               <div className="max-h-[220px] overflow-y-auto pr-1">
                 <div className="flex flex-col gap-2">
@@ -1509,7 +1558,7 @@ export default function App() {
                           <div className="flex items-center justify-between gap-2">
                             <span className="font-bold text-slate-950 text-[13px]">{leave.name}</span>
                             <div className="flex items-center gap-1.5" onClick={e => e.stopPropagation()}>
-                              <span className="text-[10px] bg-yellow-100 text-yellow-800 border border-yellow-200 px-1.5 py-0.5 rounded-md font-mono font-medium">{leave.id.substring(0, 14)}...</span>
+                              <span className="text-[11px] bg-yellow-100 text-yellow-800 border border-yellow-200 px-1.5 py-0.5 rounded-md font-mono font-medium">{leave.id.substring(0, 14)}...</span>
                               <button 
                                 className="p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors cursor-pointer"
                                 title="Xóa đơn này"
@@ -1535,7 +1584,7 @@ export default function App() {
                 </div>
               </div>
             )}
-            <p className="text-[10px] text-var(--txt2) mt-2 italic">* Chọn các đơn muốn xếp lịch và bấm "Áp dụng ... người" để tự động điền nhanh các thông tin.</p>
+            <p className="text-[11px] text-var(--txt2) mt-2 italic">* Chọn các đơn muốn xếp lịch và bấm "Áp dụng ... người" để tự động điền nhanh các thông tin.</p>
           </div>
         )}
 
@@ -1702,6 +1751,98 @@ export default function App() {
       </div>
       )}
 
+      {activeTab === 'lookup' && (
+        <div className="card w-full p-0 overflow-hidden min-h-[750px] shadow-sm border border-slate-200 rounded-2xl bg-white" id="info-lookup-card">
+          <div className="p-3.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="text-xl">🔍</span>
+              <h2 className="font-bold text-slate-800 text-base">Tra cứu thông tin & Thỏa ước lao động tập thể</h2>
+            </div>
+            <span className="text-xs text-slate-500 font-medium bg-slate-200/80 px-2.5 py-1 rounded-full">Trợ lý AI Trực tuyến</span>
+          </div>
+          <div className="w-full h-[720px]">
+            <iframe
+              src="https://dothanhphongpc1.tail1ac872.ts.net/chatbot/PMzknllbIHSxw2FT"
+              className="w-full h-full border-0"
+              title="Tra cứu thông tin"
+              allow="microphone; clipboard-read; clipboard-write"
+            />
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'auth' && (
+        <div className="w-full max-w-2xl mx-auto space-y-6 my-6 px-4">
+          <div className="card w-full p-6 bg-white border border-slate-200 rounded-2xl shadow-md" id="account-info-card">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100 flex-wrap gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-2xl bg-teal-600 text-white flex items-center justify-center font-bold text-lg shadow-md">
+                  <User size={22} />
+                </div>
+                <div>
+                  <h2 className="text-lg font-black text-slate-800">{currentUser.fullName}</h2>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    <span className="text-xs text-slate-500 font-mono">@{currentUser.username}</span>
+                    <span className={`text-[11px] font-extrabold px-2 py-0.5 rounded-md ${
+                      isSuperAdmin
+                        ? 'bg-amber-100 text-amber-800 border border-amber-300'
+                        : isWorkshopAdmin
+                          ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                          : 'bg-slate-100 text-slate-700 border border-slate-200'
+                    }`}>
+                      {isSuperAdmin ? 'Super Admin (Admin Tổng)' : isWorkshopAdmin ? 'Admin Phân Xưởng' : 'Tài Khoản Phân Xưởng'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <button
+                onClick={handleLogout}
+                className="flex items-center gap-2 px-4 py-2 bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-sm active:scale-95"
+              >
+                <LogOut size={14} /> Đăng xuất
+              </button>
+            </div>
+
+            <div className="mt-6 space-y-4">
+              <div className="bg-slate-50 p-4 rounded-xl border border-slate-200/80">
+                <label className="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-2">
+                  Phân xưởng hoạt động
+                </label>
+                {workshops.length > 1 && (isSuperAdmin || currentUser.workshopId === 'all') ? (
+                  <select
+                    value={activeWorkshop?.id || ''}
+                    onChange={(e) => {
+                      const found = workshops.find(w => w.id === e.target.value);
+                      if (found) setActiveWorkshop(found);
+                    }}
+                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-600 cursor-pointer"
+                  >
+                    {workshops.map(ws => (
+                      <option key={ws.id} value={ws.id}>{ws.name} ({ws.code})</option>
+                    ))}
+                  </select>
+                ) : (
+                  <div className="font-bold text-sky-800 text-sm bg-sky-50 px-3 py-2 rounded-xl border border-sky-200">
+                    {activeWorkshop ? activeWorkshop.name : 'Chưa chọn phân xưởng'}
+                  </div>
+                )}
+              </div>
+
+              {isAdmin && (
+                <button
+                  onClick={() => setShowWorkshopManager(true)}
+                  className="w-full py-3 px-4 bg-amber-500 hover:bg-amber-400 text-slate-950 text-sm font-black rounded-xl shadow-md transition-all cursor-pointer flex items-center justify-center gap-2 active:scale-98"
+                >
+                  <Settings size={18} />
+                  <span>Quản lý Phân xưởng & Tài khoản</span>
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {activeTab === 'staff' && (
         <div className="flex flex-col gap-6 w-full">
           <div className="card" id="staff-roster-card">
@@ -1718,12 +1859,13 @@ export default function App() {
             </div>
             <p className="text-[13px] text-var(--txt2)">Nhấn "Chỉnh sửa" để cập nhật tên nhân viên hoặc "Quản lý chữ ký" để tải lên ảnh chữ ký.</p>
             
-            {showSignatureManager && (
+            {showSignatureManager && activeWorkshop && (
               <div className="mb-6">
-                <SignatureManager 
-                  staffList={Array.from(new Set(staffData.flatMap(row => row.slice(1)).filter(Boolean)))} 
+                <SignatureManager
+                  staffList={Array.from(new Set(staffData.flatMap(row => row.slice(1)).filter(Boolean)))}
                   signatures={signatures}
-                  onSignaturesChange={setSignatures} 
+                  onSignaturesChange={setSignatures}
+                  workshopId={activeWorkshop.id}
                 />
               </div>
             )}
@@ -1761,6 +1903,103 @@ export default function App() {
             )}
           </div>
 
+          <div className="card" id="leave-balance-card">
+            <div className="ctitle">
+              Phép năm của nhân viên
+              <button className="staff-toggle" onClick={() => setShowLeaveBalance(!showLeaveBalance)}>
+                {showLeaveBalance ? 'Ẩn ▲' : 'Hiện ▼'}
+              </button>
+            </div>
+            {showLeaveBalance && activeWorkshop && (
+              <LeaveBalanceManager
+                staffList={Array.from(new Set(staffData.flatMap(row => row.slice(1)).filter(Boolean)))}
+                onAlert={setAlert}
+                workshopId={activeWorkshop.id}
+              />
+            )}
+          </div>
+
+          <div className="card" id="approved-leaves-card">
+            <div className="ctitle">
+              📋 Bảng duyệt nghỉ phép — đã xếp lịch đi ca ({approvedLeaves.length})
+              <div className="flex gap-2">
+                <button
+                  className="px-2 py-1 text-xs bg-white text-sky-700 border border-sky-300 rounded hover:bg-sky-100 font-medium cursor-pointer transition-colors"
+                  onClick={fetchWaitingLeaves}
+                  disabled={isLoadingWaitingLeaves}
+                >
+                  🔄 Cập nhật
+                </button>
+                <button
+                  className="px-2.5 py-1 text-xs bg-sky-700 text-white rounded hover:bg-sky-800 font-bold cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  onClick={handleExportApprovedLeavesExcel}
+                  disabled={approvedLeaves.length === 0}
+                >
+                  📊 Xuất Excel
+                </button>
+              </div>
+            </div>
+
+            <div className="flex gap-2 mb-3 mt-3 flex-wrap">
+              <input
+                type="text"
+                placeholder="Tìm theo tên hoặc chức danh..."
+                value={approvedSearch}
+                onChange={e => setApprovedSearch(e.target.value)}
+                className="flex-1 min-w-[180px] px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg"
+              />
+              <select
+                value={approvedYearFilter}
+                onChange={e => setApprovedYearFilter(e.target.value)}
+                className="px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg"
+              >
+                <option value="all">Tất cả năm phép</option>
+                {approvedYearOptions.map(y => <option key={y} value={y}>{y}</option>)}
+              </select>
+            </div>
+
+            {approvedLeaves.length === 0 ? (
+              <p className="text-[12px] text-var(--txt2) italic">Chưa có đơn nào được xếp lịch đi ca.</p>
+            ) : (
+              <div className="max-h-[280px] overflow-auto rounded-lg border border-sky-100">
+                <table className="w-full text-[12px] border-collapse">
+                  <thead className="sticky top-0 bg-sky-100 text-sky-900">
+                    <tr>
+                      <th className="text-left p-2 font-bold">Họ và tên</th>
+                      <th className="text-left p-2 font-bold">Chức danh</th>
+                      <th className="p-2 font-bold">Kíp</th>
+                      <th className="text-left p-2 font-bold">Thời gian</th>
+                      <th className="p-2 font-bold">Số ngày phép</th>
+                      <th className="text-left p-2 font-bold">Năm phép</th>
+                      <th className="text-left p-2 font-bold">Trạng thái</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {approvedLeaves.map(l => (
+                      <tr key={l.id} className="border-t border-sky-100 bg-white hover:bg-sky-50/60">
+                        <td className="p-2 font-semibold text-slate-800">{l.name}</td>
+                        <td className="p-2 text-slate-600">{l.chucDanh}</td>
+                        <td className="p-2 text-center text-slate-600">{l.kip}</td>
+                        <td className="p-2 text-slate-600 whitespace-nowrap">
+                          {l.startDate ? fmtVN(new Date(l.startDate)) : ''} → {l.endDate ? fmtVN(new Date(l.endDate)) : ''}
+                        </td>
+                        <td className="p-2 text-center text-slate-600">{l.leaveDays ?? '—'}</td>
+                        <td className="p-2 text-slate-600">
+                          {Array.isArray(l.allocations) && l.allocations.length > 0
+                            ? l.allocations.map((a: any) => `${a.days} (${a.year})`).join(', ')
+                            : '—'}
+                        </td>
+                        <td className="p-2">
+                          <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 rounded-md text-[11px] font-semibold">{l.status}</span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
           <div className="card" id="system-config-card">
             <div className="ctitle">Cấu hình hệ thống</div>
             <p className="text-[13px] text-var(--txt2) mb-4">Điều chỉnh thông tin ký số văn bản và tích hợp thông báo Zalo cá nhân.</p>
@@ -1790,10 +2029,23 @@ export default function App() {
                   value={config.zaloWebhookUrl || ''} 
                   onChange={e => setConfig({ ...config, zaloWebhookUrl: e.target.value })} 
                   placeholder="https://..."
-                  className="font-mono text-[12.5px] w-full px-3 py-2 border rounded-md"
+                  className="font-mono text-[12px] w-full px-3 py-2 border rounded-md"
                 />
                 <span className="text-[11px] text-var(--txt2) italic mt-1.5 block">
                   * Hệ thống sẽ tự động gửi thông báo về Zalo cá nhân qua đường dẫn webhook này khi có đơn nghỉ phép mới được tạo hoặc lưu lên hệ thống chờ phân ca.
+                </span>
+              </div>
+              <div className="field col-span-2">
+                <label>Email nhận thông báo</label>
+                <input
+                  type="text"
+                  value={config.notifyEmail || ''}
+                  onChange={e => setConfig({ ...config, notifyEmail: e.target.value })}
+                  placeholder="vd: quandoc@gmail.com (nhiều địa chỉ cách nhau bằng dấu phẩy)"
+                  className="font-mono text-[12px] w-full px-3 py-2 border rounded-md"
+                />
+                <span className="text-[11px] text-var(--txt2) italic mt-1.5 block">
+                  * Ngoài Zalo, hệ thống cũng gửi email thông báo tới (các) địa chỉ này khi có đơn nghỉ phép mới.
                 </span>
               </div>
             </div>
@@ -1807,7 +2059,7 @@ export default function App() {
             <div className="res-hdr">
               <div className="ctitle mb-0">Kết quả phân công</div>
               <div className="ex-row flex-wrap gap-2">
-                {isGoogleAuth && selectedWaitingLeaveIds.length > 0 && (
+                {selectedWaitingLeaveIds.length > 0 && (
                   <button className="btn-ex btn-indigo font-medium flex items-center justify-center transition-colors" onClick={handleExportAllZipAndUpdateStatus} disabled={isProcessing}>
                     {isProcessing ? <span className="spin spinw mr-2"></span> : '📝'} Tạo lịch thay ca và các đơn nghỉ phép
                   </button>
@@ -1818,46 +2070,6 @@ export default function App() {
                 <button className="btn-ex btn-word" onClick={handleExportWord} disabled={isProcessing}>
                   {isProcessing ? <span className="spin spinw mr-2"></span> : '📝'} Xuất Word
                 </button>
-                {loadingAuth ? (
-                  <button className="btn-ex btn-gray cursor-wait" disabled>
-                    <span className="spin mr-2 border-gray-400"></span> Đang kiểm tra...
-                  </button>
-                ) : !isGoogleAuth ? (
-                  <button className="btn-ex btn-google" onClick={handleConnectGoogle}>
-                    🔗 Kết nối Google Sheets
-                  </button>
-                ) : (
-                  <div className="flex gap-2">
-                    <button 
-                      className={`btn-ex ${isUpdatingSheets ? 'btn-gray' : 'btn-sheets'}`} 
-                      onClick={updateGoogleSheets}
-                      disabled={isUpdatingSheets}
-                    >
-                      {isUpdatingSheets ? <span className="spin spinw mr-2"></span> : '🔄'} 
-                      {isUpdatingSheets ? 'Đang đồng bộ...' : 'Đồng bộ Google Sheets'}
-                    </button>
-                    <button 
-                      className="btn-ex btn-danger"
-                      onClick={() => {
-                        setConfirmModal({
-                          isOpen: true,
-                          title: "Ngắt kết nối Google Sheets",
-                          message: "Bạn có chắc chắn muốn ngắt kết nối Google Sheets? Bạn sẽ cần đăng nhập lại để đồng bộ và truy xuất dữ liệu.",
-                          confirmText: "Ngắt kết nối",
-                          cancelText: "Hủy",
-                          isDanger: true,
-                          onConfirm: () => {
-                            setIsGoogleAuth(false);
-                            setAlert('Đã ngắt kết nối. Vui lòng kết nối lại để cập nhật.');
-                          }
-                        });
-                      }}
-                      title="Ngắt kết nối và đăng nhập lại"
-                    >
-                      🚫
-                    </button>
-                  </div>
-                )}
               </div>
             </div>
 
@@ -1945,21 +2157,21 @@ export default function App() {
                                 <span className="font-semibold">{ds}</span>
                                 <span className="text-var(--txt2) text-[11px] ml-1">{dayN(row.ngay)}</span>
                                 {row.isOverlapDay && (
-                                  <div className="text-[10px] text-var(--acc) font-bold">👥 Ngày trùng nghỉ</div>
+                                  <div className="text-[11px] text-var(--acc) font-bold">👥 Ngày trùng nghỉ</div>
                                 )}
                               </>
                             )}
                           </td>
                           <td><span className={`badge b${row.ca}`}>{row.ca}</span></td>
                           <td className="text-[12px] text-var(--txt2)">
-                            <div className="font-bold text-[10px] text-var(--acc) mb-0.5 uppercase">{row.chucDanh}</div>
+                            <div className="font-bold text-[11px] text-var(--acc) mb-0.5 uppercase">{row.chucDanh}</div>
                             {row.isSwap ? (
                               <>
                                 <span className="text-[#22c55e] text-[11px]">đổi ca</span>
                                 <br />
                                 {row.relievedTen || row.absentTen}
                                 <br />
-                                <span className="text-[10px]">Kíp {row.relievedKip || row.absentKip}</span>
+                                <span className="text-[11px]">Kíp {row.relievedKip || row.absentKip}</span>
                               </>
                             ) : row.isCKChain ? (
                               <>
@@ -1967,13 +2179,13 @@ export default function App() {
                                 <br />
                                 {row.absentTen}
                                 <br />
-                                <span className="text-[10px]">Kíp {row.absentKip}</span>
+                                <span className="text-[11px]">Kíp {row.absentKip}</span>
                               </>
                             ) : (
                               <>
                                 {row.absentTen}
                                 <br />
-                                <span className="text-[10px]">Kíp {row.absentKip}</span>
+                                <span className="text-[11px]">Kíp {row.absentKip}</span>
                               </>
                             )}
                           </td>
@@ -1984,20 +2196,20 @@ export default function App() {
                               <>
                                 <span className="conflict-badge bg-[#22c55e1a] text-[#22c55e] border-[#22c55e4d]">⇄ Đổi ca</span>
                                 {row.conflictNote && (
-                                  <div className="text-[10px] text-var(--txt2)">{row.conflictNote}</div>
+                                  <div className="text-[11px] text-var(--txt2)">{row.conflictNote}</div>
                                 )}
                               </>
                             ) : row.isCKChain ? (
                               <>
                                 <span className="conflict-badge bg-[#a855f71a] text-[#a855f7] border-[#a855f74d]">⥵ C→K</span>
                                 <br />
-                                <span className="text-[10px] text-var(--txt2)">Thay do ràng buộc Ca C→K</span>
+                                <span className="text-[11px] text-var(--txt2)">Thay do ràng buộc Ca C→K</span>
                               </>
                             ) : row.isConflict ? (
                               <>
                                 <span className="conflict-badge">△ Điều chỉnh</span>
                                 {row.conflictNote && (
-                                  <div className="text-[10px] text-var(--txt2)">{row.conflictNote}</div>
+                                  <div className="text-[11px] text-var(--txt2)">{row.conflictNote}</div>
                                 )}
                               </>
                             ) : null}
@@ -2033,17 +2245,14 @@ export default function App() {
               {isPreviewingSwap ? (
                 <button className="btn btn-primary" onClick={handleExportSwap}>Tải xuống Word</button>
               ) : isPreviewingLeave ? (
-                <>
-                  <button 
-                    className={`btn ${isSavingLeaveToSheets ? 'bg-gray-400 cursor-wait' : 'bg-[#34a853] text-white hover:bg-[#2c8e46] cursor-pointer'} font-medium rounded-lg px-4 py-2 text-sm flex items-center justify-center gap-1.5`}
-                    onClick={saveLeaveToGoogleSheets}
-                    disabled={isSavingLeaveToSheets || !leaveData.name}
-                  >
-                    {isSavingLeaveToSheets ? <span className="spin spinw mr-2"></span> : '☁️ '}
-                    {isSavingLeaveToSheets ? 'Đang lưu...' : 'Lưu lên hệ thống'}
-                  </button>
-                  <button className="btn btn-primary" onClick={handleExportLeave}>Tải xuống Word</button>
-                </>
+                <button
+                  className="btn btn-primary flex items-center justify-center gap-1.5"
+                  onClick={handleExportLeave}
+                  disabled={isProcessing || isSavingLeaveToSheets || !leaveData.name}
+                >
+                  {(isProcessing || isSavingLeaveToSheets) ? <span className="spin spinw mr-2"></span> : '📥 '}
+                  {isSavingLeaveToSheets ? 'Đang lưu đơn...' : 'Lưu đơn & Tải xuống Word'}
+                </button>
               ) : (
                 <button 
                   className="btn btn-primary flex items-center justify-center gap-1.5" 
@@ -2132,38 +2341,107 @@ export default function App() {
       )}
     </div>
 
-    {/* Footer styled exactly like the provided screenshot/USAGov */}
-    <footer id="app-footer" className="w-full bg-[#072540] text-slate-300 py-10 px-6 md:px-12 mt-auto border-t border-slate-900 select-none">
-      <div className="max-w-[1200px] mx-auto flex flex-col md:flex-row items-center justify-between gap-6">
-        <div className="flex flex-col gap-2.5 text-center md:text-left">
-          <div className="text-[13px] md:text-[14px] text-white font-bold tracking-wide">
-            Hệ thống tự dộng tạo lịch trực thay ca vận hành nghỉ phép VHIALY
+    {/* Floating back-to-top. Sits below the sticky nav (z-40) and well below the modals
+        (z-50 / 9999) so it can never cover a dialog the user is working in. */}
+    <button
+      type="button"
+      onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+      aria-label="Về đầu trang"
+      title="Về đầu trang"
+      className={`fixed bottom-5 right-5 z-30 h-11 w-11 rounded-full bg-[#00529c] text-white shadow-lg border border-white/20
+        flex items-center justify-center hover:bg-[#0a7bd4] active:scale-95 cursor-pointer
+        transition-all duration-200 ${
+          showScrollTop ? 'opacity-100 translate-y-0 pointer-events-auto' : 'opacity-0 translate-y-3 pointer-events-none'
+        }`}
+    >
+      <span className="text-[19px] leading-none font-bold">↑</span>
+    </button>
+
+    {/* Three columns of content over a separated legal bar. The previous version put
+        everything on one line, so the system name, the parent-company note and the
+        policy links all carried the same weight and none of them led. */}
+    <footer id="app-footer" className="w-full bg-[#062240] text-slate-300 mt-auto select-none">
+      {/* A single hairline in the brand blue is the only ornament the footer needs. */}
+      <div className="h-[3px] w-full bg-gradient-to-r from-[#00529c] via-[#0a7bd4] to-[#00529c]"></div>
+
+      <div className="max-w-[1200px] mx-auto px-6 md:px-12 py-10">
+        <div className="grid grid-cols-1 md:grid-cols-12 gap-8 md:gap-10">
+
+          {/* Brand */}
+          <div className="md:col-span-6">
+            <div className="flex items-start gap-3.5">
+              {/* The mark sits on a white chip rather than being colour-filtered: the
+                  source PNG is not transparent, so inverting it produced a solid block. */}
+              <div className="shrink-0 h-11 w-11 rounded-lg bg-white flex items-center justify-center shadow-sm">
+                <img
+                  src="https://i.ibb.co/r2BTySkt/2343.png"
+                  alt="EVN"
+                  className="h-8 w-8 object-contain"
+                  referrerPolicy="no-referrer"
+                />
+              </div>
+              <div className="min-w-0">
+                <div className="text-[15px] text-white font-bold tracking-tight leading-snug">
+                  Hệ thống Lịch trực thay ca vận hành
+                </div>
+                <p className="text-[12px] text-slate-400 leading-relaxed mt-1.5 max-w-md">
+                  Trang thông tin hỗ trợ nội bộ trực thuộc{' '}
+                  <a
+                    href="https://ialyhpc.vn"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-slate-200 underline decoration-slate-600 underline-offset-2 hover:text-white hover:decoration-[#0a7bd4] transition-colors"
+                  >
+                    Công ty Thủy điện Ialy
+                  </a>
+                  . Tự động lập lịch trực thay ca, quản lý đơn nghỉ phép và phép năm.
+                </p>
+              </div>
+            </div>
           </div>
-          <div className="text-[12.5px] text-slate-300 leading-relaxed font-medium">
-            Trang thông tin hỗ trợ nội bộ trực thuộc <a href="https://ialyhpc.vn" target="_blank" rel="noopener noreferrer" className="underline hover:text-white transition-colors">Công ty Thủy Điện Ialy</a>
+
+          {/* Links */}
+          <div className="md:col-span-3">
+            <div className="text-[11px] font-bold text-slate-500 uppercase tracking-[0.12em] mb-3.5">
+              Liên kết
+            </div>
+            <ul className="space-y-2.5">
+              {['Hướng dẫn sử dụng', 'Chính sách bảo mật nội bộ', 'Hỗ trợ kỹ thuật'].map(label => (
+                <li key={label}>
+                  <span className="text-[12px] text-slate-400 hover:text-white transition-colors cursor-pointer inline-flex items-center gap-2 group">
+                    <span className="w-1 h-1 rounded-full bg-slate-600 group-hover:bg-[#0a7bd4] transition-colors"></span>
+                    {label}
+                  </span>
+                </li>
+              ))}
+            </ul>
           </div>
-          
-          {/* Lower row of policy links */}
-          <div className="flex flex-wrap items-center justify-center md:justify-start gap-x-6 gap-y-2 mt-2 text-[11.5px] font-semibold text-slate-400">
-            <span className="underline cursor-pointer hover:text-white transition-colors">Hướng dẫn sử dụng</span>
-            <span className="underline cursor-pointer hover:text-white transition-colors">Chính sách bảo mật nội bộ</span>
-            <span className="underline cursor-pointer hover:text-white transition-colors">Hỗ trợ kỹ thuật </span>
+
+          {/* Current context: which workshop this session is actually working on. */}
+          <div className="md:col-span-3">
+            <div className="text-[11px] font-bold text-slate-500 uppercase tracking-[0.12em] mb-3.5">
+              Đơn vị sử dụng
+            </div>
+            <div className="text-[12px] text-slate-300 font-semibold leading-snug">
+              {activeWorkshop?.name || 'Phân xưởng Vận hành'}
+            </div>
+            {activeWorkshop?.code && (
+              <div className="mt-2 inline-block text-[11px] font-mono text-slate-400 bg-white/5 border border-white/10 rounded px-2 py-1">
+                {activeWorkshop.code}
+              </div>
+            )}
+            <div className="text-[11px] text-slate-500 mt-3 leading-relaxed">
+              {activeWorkshop?.config?.companyName || 'Công ty Thủy điện Ialy'}
+            </div>
           </div>
         </div>
 
-        {/* Top scroll button exactly like the screenshot layout */}
-        <div className="flex items-center">
-          <button 
-            onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })} 
-            className="flex items-center bg-white text-slate-800 rounded-full pl-1.5 pr-4 py-1.5 transition-all outline-none border border-slate-200 cursor-pointer shadow-md hover:bg-slate-50 hover:shadow-lg active:scale-95 duration-150"
-          >
-            <span className="h-8 w-8 bg-[#00adef] text-white font-bold rounded-full flex items-center justify-center mr-2.5 shadow-sm leading-none text-base">
-              ↑
-            </span>
-            <span className="text-[13px] font-extrabold tracking-wider uppercase text-[#05203c] underline decoration-[#00adef] decoration-2">
-              Top
-            </span>
-          </button>
+        {/* Legal bar. The back-to-top control lives in the floating button instead —
+            here it only appeared once you had already scrolled to the bottom. */}
+        <div className="mt-9 pt-5 border-t border-white/10">
+          <div className="text-[11px] text-slate-500 text-center sm:text-left">
+            © {new Date().getFullYear()} Công ty Thủy điện Ialy — Tập đoàn Điện lực Việt Nam
+          </div>
         </div>
       </div>
     </footer>

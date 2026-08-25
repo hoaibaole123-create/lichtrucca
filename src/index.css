@@ -1,8 +1,6 @@
-/* Weight 900 must stay in this list. Several headings use font-black, and when the
-   900 face is missing the browser fakes it by smearing the 800 face. That synthetic
-   bolding distorts small diacritics: the hook on Ủ in "THỦY" thickens until it
-   reads as the acute on Ý, so the company name appeared to say "THUÝ". */
-@import url('https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap');
+/* The web font is requested from index.html, not here: an @import inside this file
+   cannot start downloading until the whole stylesheet has parsed. See the comment
+   there for why the delay was visible. */
 @import "tailwindcss";
 
 @theme {

@@ -6,3 +6,10 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Tep tam khi dung video gioi thieu
+video/_khung/
+video/_tieng/
+video/_anh_video/
+video/gioi-thieu-ung-dung.mp4
+video/gioi-thieu-ung-dung.html

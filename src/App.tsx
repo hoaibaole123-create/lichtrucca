@@ -55,7 +55,19 @@ export default function App() {
   });
   const [chucDanh, setChucDanh] = useState('');
   const [kipNghi, setKipNghi] = useState('');
-  const [additionalLeaves, setAdditionalLeaves] = useState<{ kip: string, start: string, end: string, chucDanh: string }[]>([]);
+  // `nguon` = id cua don da co san trong leave_requests, khi dong nay duoc dien
+  // bang nut "Ap dung N nguoi". Dong nao co nguon thi TUYET DOI khong ghi vet
+  // lai — don do da nam trong lich su roi, ghi them la mot nguoi nghi phep hai
+  // lan trong so sach. Dong go tay hoac lay tu file Word thi nguon = null.
+  const [additionalLeaves, setAdditionalLeaves] = useState<{ kip: string, start: string, end: string, chucDanh: string, nguon?: string | null, tuWord?: boolean }[]>([]);
+  // Nguon cua nguoi nghi chinh (bon o dau trang: ngay bat dau, ngay ket thuc,
+  // chuc danh, kip). Xoa ngay khi nguoi dung sua tay bat ky o nao trong bon o
+  // do: sua roi thi no khong con la don cu nua.
+  const [nguonDonChinh, setNguonDonChinh] = useState<string | null>(null);
+  // Nguoi nghi chinh co phai doc ra tu mot file don .docx khong. Quyet dinh
+  // viec co TRU NGAY PHEP hay khong: file Word la don that da nop, con go tay
+  // chuc danh + kip thi khong co don nao.
+  const [tuWordChinh, setTuWordChinh] = useState(false);
   const [showStaff, setShowStaff] = useState(true);
   // Collapsed by default: the table can run to dozens of rows and pushes the rest of
   // the staff tab off-screen, so it opens only when someone asks for it.
@@ -535,6 +547,10 @@ export default function App() {
   const updateConcurrentLeave = (idx: number, field: string, val: string) => {
     const newList = [...additionalLeaves];
     (newList[idx] as any)[field] = val;
+    // Sua tay o nao thi dong nay khong con la don cu da ap vao nua — bo nguon
+    // di de no duoc ghi vet nhu mot dong moi.
+    newList[idx].nguon = null;
+    newList[idx].tuWord = false;
     setAdditionalLeaves(newList);
   };
 
@@ -614,6 +630,10 @@ export default function App() {
           setNgayKetThuc(endISO);
           setChucDanh(foundTitle);
           setKipNghi(foundKip);
+          // Doc tu file Word la mot don MOI doi voi he thong — chua co dong nao
+          // trong leave_requests, nen khong co nguon de nho.
+          setNguonDonChinh(null);
+          setTuWordChinh(true);
           mainSet = true;
           successCount++;
         } else {
@@ -621,7 +641,9 @@ export default function App() {
             kip: foundKip,
             start: startISO,
             end: endISO,
-            chucDanh: foundTitle
+            chucDanh: foundTitle,
+            nguon: null,
+            tuWord: true
           });
           successCount++;
         }
@@ -665,7 +687,7 @@ export default function App() {
       return;
     }
 
-    const allLeaves: Leave[] = [{ kip, start, end, ten, chucDanh }];
+    const allLeaves: Leave[] = [{ kip, start, end, ten, chucDanh, nguon: nguonDonChinh, tuWord: tuWordChinh } as Leave];
     const addErr: string[] = [];
     additionalLeaves.forEach((al, idx) => {
       if (!al.kip && !al.start && !al.end) return;
@@ -693,7 +715,9 @@ export default function App() {
         addErr.push(`Không tìm thấy "${alChucDanh}" trong Kíp ${alKip}`);
         return;
       }
-      allLeaves.push({ kip: alKip, start: alStart, end: alEnd, ten: alTen, chucDanh: alChucDanh });
+      allLeaves.push({ kip: alKip, start: alStart, end: alEnd, ten: alTen,
+                       chucDanh: alChucDanh, nguon: al.nguon ?? null,
+                       tuWord: al.tuWord === true } as Leave);
     });
 
     if (addErr.length) {
@@ -702,6 +726,19 @@ export default function App() {
     }
 
     setIsProcessing(true);
+    // Chup lai danh sach nguoi nghi NGAY BAY GIO, truoc khi doan duoi day chen
+    // them cac cho danh "THIEU NHAN SU (Kip k)" vao chinh mang allLeaves. Nhung
+    // cho danh do khong phai nguoi, va neu chup sau thi chung se di thang vao
+    // lich su nghi phep.
+    const dongNghi = allLeaves.map(l => ({
+      name: l.ten,
+      chucDanh: l.chucDanh,
+      kip: String(l.kip),
+      startDate: fmtIn(l.start),
+      endDate: fmtIn(l.end),
+      nguon: l.nguon ?? null,
+      tuWord: l.tuWord === true
+    }));
     setTimeout(() => {
       // Tự động phát hiện và bổ sung các vị trí thiếu nhân sự (ô trống trong danh sách)
       // Nếu một chức danh có người nghỉ phép, các kíp đang thiếu người ở chức danh đó cũng sẽ được xếp lịch thay
@@ -758,15 +795,59 @@ export default function App() {
         extraRows: mergedExtraRows,
         hasConflict: mergedHasConflict,
         coverCount: mergedCoverCount,
-        isMulti: allLeaves.length > 1
+        isMulti: allLeaves.length > 1,
+        dongNghi
       });
       setIsProcessing(false);
     }, 250);
   };
 
+  // Ghi vet nhung nguoi nghi cua ban lich vua xep vao lich su nghi phep.
+  //
+  // Goi luc XUAT VAN BAN chu khong luc bam "Tao Lich Thay Ca": nut tao lich hay
+  // duoc bam di bam lai de thu vai phuong an, con xuat van ban thi moi la luc
+  // ban lich duoc chot. Dat o day thi thu bao nhieu lan cung khong de lai rac.
+  //
+  // Ba loai dong, ba cach doi xu khac nhau — xem chu thich o interface Leave:
+  //   co nguon  -> bo qua han, don da nam trong lich su roi
+  //   tuWord    -> don that nguoi lao dong da nop, GHI VA TRU NGAY PHEP
+  //   con lai   -> go tay chuc danh + kip, chi ghi vet, khong dung toi quy phep
+  const ghiVetLichSu = async () => {
+    if (!currentResult?.dongNghi?.length || !activeWorkshop) return;
+
+    const canGhi = currentResult.dongNghi
+      .filter((d: any) => !d.nguon)
+      .map((d: any) => ({ ...d, truPhep: d.tuWord === true }));
+    if (canGhi.length === 0) return;
+
+    try {
+      const res = await fetch(API_BASE + '/api/leave/trace', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ entries: canGhi, workshopId: activeWorkshop.id })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setAlert(`⚠ Đã xuất văn bản nhưng chưa ghi được vào lịch sử nghỉ phép: ${data.error || 'Lỗi máy chủ'}`);
+        return;
+      }
+      if (data.saved > 0) {
+        const soTru = canGhi.filter((d: any) => d.truPhep).length;
+        setAlert(`✅ Đã lưu ${data.saved} người vào lịch sử nghỉ phép` +
+                 (soTru > 0 ? `, trong đó ${soTru} đơn từ file Word có trừ ngày phép.` : '.'));
+        fetchWaitingLeaves();
+      }
+    } catch (e: any) {
+      // Xuat van ban da xong roi; hong buoc ghi vet thi bao chu khong duoc lam
+      // hong ca thao tac nguoi dung vua thuc hien.
+      setAlert(`⚠ Đã xuất văn bản nhưng lỗi kết nối khi ghi lịch sử: ${e.message}`);
+    }
+  };
+
   const handleExportWord = async () => {
     setIsProcessing(true);
     await exportWord(currentResult, docConfig);
+    await ghiVetLichSu();
     setIsProcessing(false);
   };
 
@@ -921,6 +1002,11 @@ export default function App() {
     setNgayKetThuc(first.endDate);
     setChucDanh(first.chucDanh);
     setKipNghi(String(first.kip));
+    // Nho id cua don goc. Day la diem mau chot chong ghi trung: nhung dong nay
+    // DA nam trong lich su nghi phep roi, nen luc xuat van ban chung phai bi bo
+    // qua. Khong nho lai thi taoLich() khong con cach nao phan biet mot dong ap
+    // tu don cu voi mot dong go tay — ca hai deu chi la bon o input.
+    setNguonDonChinh(first.id);
 
     // Các đơn còn lại cho vào concurrent / additionalLeaves
     const rem = selectedItems.slice(1);
@@ -928,7 +1014,9 @@ export default function App() {
       chucDanh: item.chucDanh,
       kip: String(item.kip),
       start: item.startDate,
-      end: item.endDate
+      end: item.endDate,
+      nguon: item.id,
+      tuWord: false
     }));
     setAdditionalLeaves(newAdditional);
 
@@ -990,6 +1078,10 @@ export default function App() {
       // 1. Download the ZIP file
       await exportAllDocsZip(currentResult, selectedLeavesData, docConfig, signatures);
 
+      // Nhung nguoi khong den tu danh sach don cho (go tay, hoac doc tu file
+      // Word) chua he co mat trong lich su nghi phep — ghi vet ho o day.
+      await ghiVetLichSu();
+
       // 2. Update waiting leaves status to 'Đã xử lý'
       if (selectedWaitingLeaveIds.length > 0) {
         const updateRes = await fetch(API_BASE + '/api/sheets/leave-requests/update-status', {
@@ -1012,6 +1104,9 @@ export default function App() {
       } else {
         setAlert("✅ Đã tải xuống hồ sơ dạng ZIP thành công!");
       }
+
+      // 3. Đồng bộ sang app BẢNG THEO DÕI CƠM CA (lỗi ở đây không làm hỏng việc xuất hồ sơ)
+      await pushToComCa(false);
     } catch (e: any) {
       console.error(e);
       setAlert(`❌ Lỗi trong quá trình xuất trọn bộ hồ sơ: ${e.message}`);
@@ -1023,6 +1118,63 @@ export default function App() {
   const handleExportAllZipAndUpdateStatus = async () => {
     if (!currentResult) return;
     await proceedExportAllZipAndUpdateStatus();
+  };
+
+  // Đẩy kết quả phân công sang app BẢNG THEO DÕI CƠM CA.
+  // Người nghỉ -> F (0 suất), người đi thay -> nhận ca đó (được báo cơm).
+  // baoKetQua = true khi người dùng bấm nút riêng, để hiện thông báo.
+  const pushToComCa = async (baoKetQua: boolean) => {
+    if (!currentResult) return;
+
+    // Ngay la doi tuong Date. JSON.stringify se doi sang gio UTC, ma VN = UTC+7
+    // nen 00:00 ngay 04 thanh 2026-09-03T17:00Z -> ben cong com ca doc ra ngay 03.
+    // Phai tu ghep chuoi theo gio dia phuong.
+    const ymd = (d: any) => {
+      const t = d instanceof Date ? d : new Date(d);
+      if (isNaN(t.getTime())) return '';
+      return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
+    };
+
+    const rows = currentResult.allResults.flatMap((res: any) =>
+      res.ketQua.map((it: any) => ({
+        ngay: ymd(it.ngay),
+        ca: it.ca,
+        absentTen: res.ten,
+        nguoiThay: it.nguoitructhay
+      }))
+    );
+
+    // Ngay nghi ma khong tim duoc nguoi thay: van phai chuyen nguoi nghi thanh F,
+    // chi la khong ai duoc nhan suat com do.
+    const tenDangNghi = new Set(currentResult.allResults.map((r: any) => String(r.ten).trim()));
+    (currentResult.extraRows || []).forEach((ex: any) => {
+      const ten = String(ex.absentTen || '').trim();
+      if (!ten || !tenDangNghi.has(ten)) return;
+      rows.push({ ngay: ymd(ex.ngay), ca: ex.ca, absentTen: ten, nguoiThay: 'N/A' });
+    });
+
+    try {
+      const r = await fetch(API_BASE + '/api/comca/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rows, workshopId: activeWorkshop?.id })
+      });
+      const kq = await r.json();
+      console.log('Đồng bộ cơm ca:', kq);
+
+      if (baoKetQua) {
+        const c = kq?.comca;
+        if (c?.ok) {
+          const boQua = c.skipped?.length ? ` (bỏ qua ${c.skipped.length}: ${c.skipped.join('; ')})` : '';
+          setAlert(`✅ Đã báo cơm ca: ghi ${c.applied} ô${boQua}`);
+        } else {
+          setAlert(`❌ Không báo cơm ca được: ${c?.error || kq?.error || c?.skipped || 'lỗi không rõ'}`);
+        }
+      }
+    } catch (e: any) {
+      console.error('Không đồng bộ được bảng cơm ca:', e);
+      if (baoKetQua) setAlert(`❌ Không gọi được app cơm ca: ${e.message}`);
+    }
   };
 
   const handleExportSwap = async () => {
@@ -1599,22 +1751,26 @@ export default function App() {
         <div className="g2">
           <div className="field">
             <label>Ngày bắt đầu nghỉ</label>
-            <input type="date" value={ngayBatDau} onChange={e => setNgayBatDau(e.target.value)} />
+            <input type="date" value={ngayBatDau}
+                   onChange={e => { setNgayBatDau(e.target.value); setNguonDonChinh(null); setTuWordChinh(false); }} />
           </div>
           <div className="field">
             <label>Ngày kết thúc nghỉ</label>
-            <input type="date" value={ngayKetThuc} onChange={e => setNgayKetThuc(e.target.value)} />
+            <input type="date" value={ngayKetThuc}
+                   onChange={e => { setNgayKetThuc(e.target.value); setNguonDonChinh(null); setTuWordChinh(false); }} />
           </div>
           <div className="field">
             <label>Chức danh người nghỉ</label>
-            <select value={chucDanh} onChange={e => setChucDanh(e.target.value)}>
+            <select value={chucDanh}
+                    onChange={e => { setChucDanh(e.target.value); setNguonDonChinh(null); setTuWordChinh(false); }}>
               <option value="">-- Chọn chức danh --</option>
               {staffData.map(r => <option key={r[0]} value={r[0]}>{r[0]}</option>)}
             </select>
           </div>
           <div className="field">
             <label>Kíp nghỉ</label>
-            <select value={kipNghi} onChange={e => setKipNghi(e.target.value)}>
+            <select value={kipNghi}
+                    onChange={e => { setKipNghi(e.target.value); setNguonDonChinh(null); setTuWordChinh(false); }}>
               <option value="">-- Chọn kíp --</option>
               {[1, 2, 3, 4, 5].map(k => <option key={k} value={k}>Kíp {k}</option>)}
             </select>
@@ -2077,6 +2233,14 @@ export default function App() {
                 </button>
                 <button className="btn-ex btn-word" onClick={handleExportWord} disabled={isProcessing}>
                   {isProcessing ? <span className="spin spinw mr-2"></span> : '📝'} Xuất Word
+                </button>
+                <button
+                  className="btn-ex btn-indigo font-medium flex items-center justify-center transition-colors"
+                  onClick={() => pushToComCa(true)}
+                  disabled={isProcessing}
+                  title="Ghi ca nghỉ phép và ca đi thay sang Bảng theo dõi cơm ca"
+                >
+                  🍚 Báo cơm ca
                 </button>
               </div>
             </div>

@@ -9,7 +9,9 @@
     "start": "tsx server.ts",
     "preview": "vite preview",
     "clean": "rm -rf dist",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "video": "python video/dung_tat_ca.py",
+    "video:tieng": "python video/dung_tat_ca.py --tieng"
   },
   "dependencies": {
     "@types/cookie-parser": "^1.4.10",
@@ -40,6 +42,7 @@
     "@types/pg": "^8.11.10",
     "@vitejs/plugin-react": "^5.0.4",
     "autoprefixer": "^10.4.21",
+    "playwright": "^1.62.1",
     "tailwindcss": "^4.1.14",
     "vite": "^6.2.0"
   }

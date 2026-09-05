@@ -7,6 +7,15 @@ export interface Leave {
   end: Date;
   ten: string;
   chucDanh: string;
+  // Hai truong duoi day khong tham gia vao viec xep ca. Chung chi di theo dong
+  // nghi de luc xuat van ban con biet dong nay tu dau ma ra:
+  //   nguon  = id cua don da co san trong leave_requests (nut "Ap dung N nguoi").
+  //            Co nguon thi KHONG ghi lai — don da nam trong lich su roi.
+  //   tuWord = dong nay doc ra tu mot file don xin nghi phep .docx. Do la don
+  //            that nguoi lao dong da nop, nen phai TRU NGAY PHEP. Con dong go
+  //            tay chuc danh + kip thi khong co don nao ca, chi ghi vet.
+  nguon?: string | null;
+  tuWord?: boolean;
 }
 
 export interface ResultItem {

@@ -280,7 +280,16 @@ console.log("GOOGLE_CLIENT_SECRET exists:", !!process.env.GOOGLE_CLIENT_SECRET);
 console.log("APP_URL:", process.env.APP_URL);
 
 const app = express();
-const PORT = 3000;
+// Doc PORT tu moi truong, 3000 la mac dinh khi khong ai dat. Truoc day so 3000
+// bi ghi cung, nen may chu khong chay duoc o bat ky cong nao khac — ke ca khi
+// noi chay no yeu cau mot cong khac (Render va phan lon nen tang deu cap cong
+// qua bien PORT), lan khi may da co thu khac chiem 3000.
+//
+// LUU Y khi chay o cong khac: duong quay lai cua Google OAuth duoc dung tu
+// APP_URL (mac dinh http://localhost:3000). Neu can dang nhap Google o cong
+// khac thi phai dat APP_URL cho khop VA khai bao dung duong do trong Google
+// Cloud Console, khong thi Google se tu choi.
+const PORT = Number(process.env.PORT) || 3000;
 
 app.use(express.json());
 app.use(cookieParser());
@@ -323,6 +332,12 @@ app.get("/api/debug/test-db", async (req, res) => {
     res.status(500).json({ success: false, error: e.message });
   }
 });
+
+// Trang thai rieng cho cac dong do tab xep lich ghi vet lai. Phai KHAC
+// "Cho phan ca": danh sach don cho xep lich loc dung theo chuoi do (App.tsx
+// dong 496), nen neu dung lai ten do thi don vua xep lich xong se quay tro
+// lai hang cho, va nguoi dung se xep lich cho no lan nua.
+const TRANG_THAI_GHI_VET = "Đã xếp lịch";
 
 const getOAuth2Client = () => {
   const appUrl = (process.env.APP_URL || 'http://localhost:3000').trim().replace(/\/$/, "");
@@ -1149,6 +1164,13 @@ async function requireAuth(req: any, res: any, next: any) {
   // from req.path, which would make every check below silently miss.
   if (!path.startsWith("/api/")) return next();
   if (PUBLIC_API_PATHS.has(path)) return next();
+
+  // Đồng bộ cơm ca chạy máy-với-máy: cho phép gọi bằng khoá chung thay vì phiên đăng nhập.
+  // Khoá nằm trong biến môi trường, không có khoá thì lối này đóng.
+  if (path === "/api/comca/sync") {
+    const key = process.env.COMCA_API_KEY;
+    if (key && req.headers["x-api-key"] === key) return next();
+  }
 
   try {
     const user = await loadSession(req.cookies?.[SESSION_COOKIE]);
@@ -2090,6 +2112,148 @@ app.get("/api/sheets/leave-balance", async (req, res) => {
   }
 });
 
+// Ghi vet vao lich su nghi phep cho nhung nguoi duoc xep lich thay ma KHONG di
+// qua form don xin nghi phep — tuc hai loi vao cua tab xep lich: tai len file
+// Word, va go tay chuc danh + kip.
+//
+// HAI LOI VAO DO KHONG GIONG NHAU, nen cach doi xu cung khac:
+//
+//   File Word  la mot don xin nghi phep THAT nguoi lao dong da nop tren giay.
+//              Ghi vet VA tru ngay phep, y het mot don nop qua form.
+//              -> entry.truPhep = true
+//   Go tay     chi la thao tac xep lich: khong co don nao ca, khong ai xin
+//              nghi qua he thong. Chi ghi vet de tra cuu, khong dung toi quy
+//              phep nam.
+//              -> entry.truPhep = false
+//
+// TRU PHEP hay khong quyet dinh o mot cho duy nhat: co sinh leave_allocations
+// hay khong. So ngay da dung duoc tinh bang SUM(leave_allocations.days) (xem
+// cac truy van o dong 743, 812, 917), nen dong khong co allocation thi quy
+// phep nam khong nhuc nhich.
+//
+// TAI SAO KHONG DUNG LAI /api/sheets/leave-requests: endpoint do con BAN THONG
+// BAO Zalo/email moi lan luu. Nhung don o day phan lon la viec da roi — da nop
+// giay, da duoc biet — nen ban thong bao "co don nghi phep moi" cho ca nhom la
+// sai. Ngoai ra endpoint nay nhan mot lo nhieu nguoi, tu bo qua cho danh
+// "THIEU NHAN SU", va tu chan ghi trung.
+app.post("/api/leave/trace", async (req: any, res) => {
+  const { entries, workshopId } = req.body;
+
+  if (!Array.isArray(entries) || entries.length === 0) {
+    return res.status(400).json({ error: "Khong co dong nao de ghi." });
+  }
+  if (!workshopId) {
+    return res.status(400).json({ error: "Thiếu phân xưởng." });
+  }
+
+  const dateStr = new Date().toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" });
+  const client = await sqlPool.connect();
+  const daGhi: any[] = [];
+  const boQua: string[] = [];
+
+  try {
+    await client.query("BEGIN");
+
+    for (const e of entries) {
+      const name = String(e?.name || "").trim();
+      const chucDanh = String(e?.chucDanh || "").trim();
+      const kip = String(e?.kip ?? "").trim();
+      const startDate = String(e?.startDate || "").trim();
+      const endDate = String(e?.endDate || "").trim();
+
+      if (!name || !chucDanh || !kip || !startDate || !endDate) {
+        boQua.push(`${name || "(khong ten)"}: thiếu thông tin`);
+        continue;
+      }
+      // Cac o trong cua luoi phan ca duoc taoLich() dien bang mot cho danh
+      // "THIEU NHAN SU (Kip k)". Do khong phai nguoi, khong duoc vao lich su.
+      if (/^THIẾU NHÂN SỰ/i.test(name)) {
+        continue;
+      }
+
+      // Da co dong nao cung nguoi, cung khoang ngay, cung phan xuong chua?
+      // Bam nut xuat van ban hai lan la chuyen binh thuong, va lan thu hai
+      // khong duoc de lai them mot dong nua.
+      const trung = await client.query(
+        `SELECT id FROM leave_requests
+          WHERE workshop_id = $1 AND lower(trim(name)) = lower(trim($2))
+            AND start_date = $3 AND end_date = $4
+          LIMIT 1`,
+        [workshopId, name, startDate, endDate]
+      );
+      if (trung.rows.length) {
+        boQua.push(`${name}: đã có trong lịch sử`);
+        continue;
+      }
+
+      const normalizedChucDanh = chucDanh === "Trực phụ cơ MR" ? "Trực phụ máy MR" : chucDanh;
+      const id = "TRACE_" + Date.now() + "_" + Math.floor(Math.random() * 1000);
+      const truPhep = e?.truPhep === true;
+      const location = String(e?.location || "Gia Lai");
+      const hasLeavePermit = e?.hasLeavePermit === true;
+
+      // Chi don tu file Word moi chay qua day. planLeaveRequest doc lich truc
+      // that de biet nguoi nay thuc su nghi may ca, chia ngay phep sang nam
+      // truoc neu con phep chuyen tiep, va tinh them ngay di duong.
+      let plan: any = null;
+      if (truPhep) {
+        plan = await planLeaveRequest({
+          name, workshopId, kip, startDate, endDate, location, hasLeavePermit
+        });
+      }
+
+      await client.query(
+        `INSERT INTO leave_requests
+           (id, name, birth_year, chuc_danh, kip, start_date, end_date, reason, phone,
+            location, status, created_at, leave_year, has_leave_permit,
+            distance_km, travel_days, leave_days, workshop_id)
+         VALUES ($1,$2,'',$3,$4,$5,$6,$7,'',$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+        [
+          id,
+          name,
+          normalizedChucDanh,
+          kip,
+          startDate,
+          endDate,
+          String(e?.reason || (truPhep ? "Giải quyết việc riêng gia đình" : "Xếp lịch trực thay")),
+          location,
+          TRANG_THAI_GHI_VET,
+          dateStr,
+          plan ? plan.leaveYear : String(startDate).slice(0, 4),
+          hasLeavePermit,
+          plan ? plan.travel.distanceKm : null,
+          plan ? plan.travel.travelDays : 0,
+          plan ? plan.leaveDays : 0,
+          workshopId
+        ]
+      );
+
+      if (plan) {
+        for (const [year, days] of Object.entries(plan.allocations)) {
+          await client.query(
+            `INSERT INTO leave_allocations (leave_id, leave_year, days) VALUES ($1,$2,$3)`,
+            [id, year, days]
+          );
+        }
+      }
+
+      daGhi.push({
+        id, name, chucDanh: normalizedChucDanh, kip, startDate, endDate,
+        truPhep, leaveDays: plan ? plan.leaveDays : 0
+      });
+    }
+
+    await client.query("COMMIT");
+    res.json({ success: true, saved: daGhi.length, skipped: boQua, entries: daGhi });
+  } catch (error: any) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("Ghi vet lich su nghi phep that bai:", error);
+    res.status(500).json({ error: "Không ghi được vào lịch sử nghỉ phép", details: error.message });
+  } finally {
+    client.release();
+  }
+});
+
 app.post("/api/sheets/leave-requests/update-status", async (req, res) => {
   const { ids, status, workshopId } = req.body;
 
@@ -2140,10 +2304,94 @@ app.post("/api/sheets/leave-requests/delete", async (req, res) => {
   }
 });
 
+// Đẩy thay đổi ca sang app BẢNG THEO DÕI CƠM CA (Supabase).
+// Đây là nguồn lưu chính; Google Sheets chỉ còn là bản sao tuỳ chọn.
+// Không bao giờ ném lỗi ra ngoài: cơm ca hỏng thì việc thay ca vẫn tính là xong.
+async function syncComCa(updates: any[], workshopId: string | null) {
+  const url = process.env.COMCA_URL;
+  if (!url || !updates?.length) return { skipped: "chưa cấu hình COMCA_URL" };
+
+  // Nếu có khai báo phân xưởng thì chỉ phân xưởng đó được đồng bộ
+  const only = process.env.COMCA_WORKSHOP_ID;
+  if (only && workshopId !== only) {
+    return { skipped: `phân xưởng ${workshopId} không dùng báo cơm ca` };
+  }
+
+  try {
+    const resp = await fetch(`${url}/api/shift-updates`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": process.env.COMCA_API_KEY || ""
+      },
+      body: JSON.stringify({ source: "lichtrucca", workshopId, updates })
+    });
+
+    const kq: any = await resp.json();
+    if (kq?.ok) {
+      console.log(
+        `Đồng bộ cơm ca: ghi ${kq.applied} ô` +
+          (kq.skipped?.length ? `, bỏ qua ${kq.skipped.length}: ${kq.skipped.join("; ")}` : "")
+      );
+    } else {
+      console.error("Đồng bộ cơm ca thất bại:", kq?.error);
+    }
+    return kq;
+  } catch (e: any) {
+    console.error("Không gọi được app cơm ca:", e.message);
+    return { ok: false, error: e.message };
+  }
+}
+
+// Đẩy kết quả phân công trực thay sang app BẢNG THEO DÕI CƠM CA.
+// Nhận thẳng cấu trúc màn hình "Kết quả phân công" đang có:
+//   rows: [{ ngay, ca, absentTen, nguoiThay }]
+// Người nghỉ -> F (không tính cơm); người đi thay -> nhận ca đó (được báo cơm).
+// Doi moc thoi gian sang ngay theo gio Viet Nam (UTC+7).
+// Client gui Date -> JSON ra chuoi UTC, cat 10 ky tu dau se lui 1 ngay.
+function ngayVN(v: any): string {
+  const raw = String(v ?? "").trim();
+  if (!raw) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  const t = new Date(raw);
+  if (isNaN(t.getTime())) return "";
+  return new Date(t.getTime() + 7 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+app.post("/api/comca/sync", async (req: any, res) => {
+  const { rows } = req.body;
+  const workshopId = req.user?.workshopId || req.body?.workshopId || null;
+
+  if (!Array.isArray(rows) || !rows.length) {
+    return res.json({ ok: false, error: "Không có dòng nào để đồng bộ" });
+  }
+
+  const updates: { date: string; name: string; shift: string }[] = [];
+
+  for (const r of rows) {
+    const date = ngayVN(r.ngay);
+    if (!date) continue;
+
+    if (r.absentTen) updates.push({ date, name: String(r.absentTen).trim(), shift: "F" });
+
+    // "N/A" = chưa tìm được người thay -> ca đó không ai được báo cơm
+    const thay = String(r.nguoiThay || "").trim();
+    if (thay && thay !== "N/A" && r.ca) {
+      updates.push({ date, name: thay, shift: String(r.ca).trim().toUpperCase() });
+    }
+  }
+
+  const kq = await syncComCa(updates, workshopId);
+  res.json({ ok: true, sent: updates.length, comca: kq });
+});
+
 app.post("/api/sheets/update", async (req, res) => {
+  const { spreadsheetId, updates } = req.body;
+  const callerWorkshop = (req as any).user?.workshopId || req.body?.workshopId || null;
+
   const oauth2Client = getOAuth2Client();
   let tokens = null;
-  
+
   const tokensStr = req.cookies.google_tokens;
   if (tokensStr) {
     try {
@@ -2151,13 +2399,18 @@ app.post("/api/sheets/update", async (req, res) => {
     } catch (e) {
       console.error("Error parsing cookie tokens:", e);
     }
-  } 
-  
+  }
+
   if (!tokens) {
     tokens = await loadTokens();
   }
 
-  if (!tokens) return res.status(401).json({ error: "Not authenticated" });
+  // Dữ liệu nay nằm ở Supabase. Không có Google (hoặc không truyền spreadsheetId)
+  // thì bỏ qua Sheets luôn chứ không báo lỗi 401 như trước.
+  if (!tokens || !spreadsheetId) {
+    const comca = await syncComCa(updates, callerWorkshop);
+    return res.json({ success: true, sheets: "bỏ qua (không dùng Google)", comca });
+  }
 
   oauth2Client.setCredentials(tokens);
 
@@ -2167,9 +2420,7 @@ app.post("/api/sheets/update", async (req, res) => {
     saveTokens(newTokens);
   });
 
-  const { spreadsheetId, updates } = req.body;
   // updates: Array<{ date: string, person: string, shift: string }>
-
   const sheets = google.sheets({ version: "v4", auth: oauth2Client });
 
   try {
@@ -2364,7 +2615,10 @@ app.post("/api/sheets/update", async (req, res) => {
       }
     }
 
-    res.json({ success: true });
+    // 5. Đồng bộ sang app BẢNG THEO DÕI CƠM CA (nguồn lưu chính)
+    const comca = await syncComCa(updates, callerWorkshop);
+
+    res.json({ success: true, sheets: "đã ghi", comca });
   } catch (error: any) {
     console.error("Error updating sheet details:", {
       message: error.message,

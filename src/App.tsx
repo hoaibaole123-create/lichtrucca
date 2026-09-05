@@ -849,7 +849,7 @@ export default function App() {
     await exportWord(currentResult, docConfig);
     await ghiVetLichSu();
     // Xuat 1 don cung phai bao com ca, khong doi den luc xuat tron bo ZIP
-    await pushToComCa(true);
+    await pushToComCa();
     setIsProcessing(false);
   };
 
@@ -1108,7 +1108,7 @@ export default function App() {
       }
 
       // 3. Đồng bộ sang app BẢNG THEO DÕI CƠM CA (lỗi ở đây không làm hỏng việc xuất hồ sơ)
-      await pushToComCa(false);
+      await pushToComCa();
     } catch (e: any) {
       console.error(e);
       setAlert(`❌ Lỗi trong quá trình xuất trọn bộ hồ sơ: ${e.message}`);
@@ -1124,8 +1124,7 @@ export default function App() {
 
   // Đẩy kết quả phân công sang app BẢNG THEO DÕI CƠM CA.
   // Người nghỉ -> F (0 suất), người đi thay -> nhận ca đó (được báo cơm).
-  // baoKetQua = true khi người dùng bấm nút riêng, để hiện thông báo.
-  const pushToComCa = async (baoKetQua: boolean) => {
+  const pushToComCa = async () => {
     if (!currentResult) return;
 
     // Ngay la doi tuong Date. JSON.stringify se doi sang gio UTC, ma VN = UTC+7
@@ -1162,20 +1161,12 @@ export default function App() {
         body: JSON.stringify({ rows, workshopId: activeWorkshop?.id })
       });
       const kq = await r.json();
+      // Chi tiet nam o console cho luc can tra, tren man hinh chi mot dong ngan
       console.log('Đồng bộ cơm ca:', kq);
-
-      if (baoKetQua) {
-        const c = kq?.comca;
-        if (c?.ok) {
-          const boQua = c.skipped?.length ? ` (bỏ qua ${c.skipped.length}: ${c.skipped.join('; ')})` : '';
-          setAlert(`✅ Đã báo cơm ca: ghi ${c.applied} ô${boQua}`);
-        } else {
-          setAlert(`❌ Không báo cơm ca được: ${c?.error || kq?.error || c?.skipped || 'lỗi không rõ'}`);
-        }
-      }
+      setAlert(kq?.comca?.ok ? '✅ Đã cập nhật bảng báo cơm' : '❌ Chưa cập nhật được bảng báo cơm');
     } catch (e: any) {
       console.error('Không đồng bộ được bảng cơm ca:', e);
-      if (baoKetQua) setAlert(`❌ Không gọi được app cơm ca: ${e.message}`);
+      setAlert('❌ Chưa cập nhật được bảng báo cơm');
     }
   };
 
@@ -1196,15 +1187,11 @@ export default function App() {
         body: JSON.stringify({ ...swapData, workshopId: activeWorkshop?.id })
       });
       const kq = await r.json();
-      const c = kq?.comca;
-      if (c?.ok) {
-        const boQua = c.skipped?.length ? ` (bo qua ${c.skipped.length}: ${c.skipped.join('; ')})` : '';
-        setAlert(`✅ Da bao com ca: ghi ${c.applied} o${boQua}`);
-      } else {
-        setAlert(`❌ Khong bao com ca duoc: ${c?.error || kq?.error || c?.skipped || 'loi khong ro'}`);
-      }
+      console.log('Đồng bộ cơm ca (đổi ca):', kq);
+      setAlert(kq?.comca?.ok ? '✅ Đã cập nhật bảng báo cơm' : '❌ Chưa cập nhật được bảng báo cơm');
     } catch (e: any) {
-      setAlert(`❌ Khong goi duoc app com ca: ${e.message}`);
+      console.error('Không đồng bộ được bảng cơm ca:', e);
+      setAlert('❌ Chưa cập nhật được bảng báo cơm');
     }
   };
 
@@ -2258,14 +2245,6 @@ export default function App() {
                 </button>
                 <button className="btn-ex btn-word" onClick={handleExportWord} disabled={isProcessing}>
                   {isProcessing ? <span className="spin spinw mr-2"></span> : '📝'} Xuất Word
-                </button>
-                <button
-                  className="btn-ex btn-indigo font-medium flex items-center justify-center transition-colors"
-                  onClick={() => pushToComCa(true)}
-                  disabled={isProcessing}
-                  title="Ghi ca nghỉ phép và ca đi thay sang Bảng theo dõi cơm ca"
-                >
-                  🍚 Báo cơm ca
                 </button>
               </div>
             </div>

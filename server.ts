@@ -1167,7 +1167,7 @@ async function requireAuth(req: any, res: any, next: any) {
 
   // Đồng bộ cơm ca chạy máy-với-máy: cho phép gọi bằng khoá chung thay vì phiên đăng nhập.
   // Khoá nằm trong biến môi trường, không có khoá thì lối này đóng.
-  if (path === "/api/comca/sync") {
+  if (path === "/api/comca/sync" || path === "/api/comca/doi-ca") {
     const key = process.env.COMCA_API_KEY;
     if (key && req.headers["x-api-key"] === key) return next();
   }
@@ -2380,6 +2380,45 @@ app.post("/api/comca/sync", async (req: any, res) => {
       updates.push({ date, name: thay, shift: String(r.ca).trim().toUpperCase() });
     }
   }
+
+  const kq = await syncComCa(updates, workshopId);
+  res.json({ ok: true, sent: updates.length, comca: kq });
+});
+
+// Doi ca thu cong: P1 nhuong ca shift1 ngay date1 cho P2, va nguoc lai.
+// Nguoi nhuong ca hom do khong di lam -> O (khong phai F, vi khong nghi phep);
+// nguoi di thay nhan dung ca do -> duoc bao com.
+app.post("/api/comca/doi-ca", async (req: any, res) => {
+  const { date1, date2, person1, person2, shift1, shift2 } = req.body || {};
+  const workshopId = req.user?.workshopId || req.body?.workshopId || null;
+
+  const p1 = String(person1 || "").trim();
+  const p2 = String(person2 || "").trim();
+  if (!p1 || !p2) return res.json({ ok: false, error: "Thieu ten nguoi doi ca" });
+
+  const d1 = ngayVN(date1);
+  const d2 = ngayVN(date2);
+
+  // Key theo nguoi+ngay: cung mot o bi ghi 2 lan thi lan sau de len tren.
+  // Nho vay doi ca trong cung mot ngay van ra dung (O ghi truoc, ca that ghi sau).
+  const bang = new Map<string, { date: string; name: string; shift: string }>();
+  const dat = (date: string, name: string, shift: string) => {
+    if (!date || !name) return;
+    bang.set(`${name}|${date}`, { date, name, shift });
+  };
+
+  const co1 = d1 && shift1 && shift1 !== "None";
+  const co2 = d2 && shift2 && shift2 !== "None";
+
+  // Buoc 1: ai nhuong ca thi hom do thanh O
+  if (co1) dat(d1, p1, "O");
+  if (co2) dat(d2, p2, "O");
+  // Buoc 2: ai di thay thi nhan ca — ghi sau nen thang the neu trung o
+  if (co1) dat(d1, p2, String(shift1).toUpperCase());
+  if (co2) dat(d2, p1, String(shift2).toUpperCase());
+
+  const updates = [...bang.values()];
+  if (!updates.length) return res.json({ ok: false, error: "Khong co ca nao de doi" });
 
   const kq = await syncComCa(updates, workshopId);
   res.json({ ok: true, sent: updates.length, comca: kq });

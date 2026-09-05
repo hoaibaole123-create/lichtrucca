@@ -848,6 +848,8 @@ export default function App() {
     setIsProcessing(true);
     await exportWord(currentResult, docConfig);
     await ghiVetLichSu();
+    // Xuat 1 don cung phai bao com ca, khong doi den luc xuat tron bo ZIP
+    await pushToComCa(true);
     setIsProcessing(false);
   };
 
@@ -1180,7 +1182,30 @@ export default function App() {
   const handleExportSwap = async () => {
     setIsProcessing(true);
     await exportSwapDoc(swapData, docConfig, signatures);
+    await pushSwapToComCa();
     setIsProcessing(false);
+  };
+
+  // Doi ca thu cong -> sua luon bang com ca.
+  // Nguoi nhuong ca hom do thanh O (khong an com), nguoi di thay nhan ca do.
+  const pushSwapToComCa = async () => {
+    try {
+      const r = await fetch(API_BASE + '/api/comca/doi-ca', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...swapData, workshopId: activeWorkshop?.id })
+      });
+      const kq = await r.json();
+      const c = kq?.comca;
+      if (c?.ok) {
+        const boQua = c.skipped?.length ? ` (bo qua ${c.skipped.length}: ${c.skipped.join('; ')})` : '';
+        setAlert(`✅ Da bao com ca: ghi ${c.applied} o${boQua}`);
+      } else {
+        setAlert(`❌ Khong bao com ca duoc: ${c?.error || kq?.error || c?.skipped || 'loi khong ro'}`);
+      }
+    } catch (e: any) {
+      setAlert(`❌ Khong goi duoc app com ca: ${e.message}`);
+    }
   };
 
   useEffect(() => {

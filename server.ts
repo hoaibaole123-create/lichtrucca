@@ -1147,8 +1147,75 @@ const PUBLIC_API_PATHS = new Set([
   "/api/auth/logout",
   "/api/auth/me",
   "/api/auth/register",
-  "/api/setup/status"
+  "/api/setup/status",
+  "/api/sso/token",
+  "/api/sso/login"
 ]);
+
+// ── SSO (Single Sign-On) ────────────────────────────────────────────────────
+// pxvhialy.vn goi POST /api/sso/token voi dung shared secret de lay token
+// mot lan. Sau do redirect nguoi dung toi GET /api/sso/login?token=TOKEN.
+// Token het han sau 60 giay va chi dung duoc 1 lan.
+const SSO_TOKENS = new Map<string, { username: string; exp: number }>();
+
+// Don gian: xoa token qua han moi 5 phut.
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of SSO_TOKENS) {
+    if (v.exp < now) SSO_TOKENS.delete(k);
+  }
+}, 5 * 60 * 1000);
+
+// POST /api/sso/token
+// Body: { secret: string, username?: string }
+// username mac dinh la "vhialy" neu khong truyen.
+app.post("/api/sso/token", async (req: any, res) => {
+  const secret = process.env.SSO_SECRET;
+  if (!secret) return res.status(503).json({ ok: false, error: "SSO chua duoc cau hinh" });
+  if (req.body?.secret !== secret) return res.status(401).json({ ok: false, error: "Sai secret" });
+
+  const username = req.body?.username || "vhialy";
+  const token = require("crypto").randomBytes(32).toString("hex");
+  SSO_TOKENS.set(token, { username, exp: Date.now() + 60_000 });
+  res.json({ ok: true, token });
+});
+
+// GET /api/sso/login?token=TOKEN
+// Validate token, tao session, redirect ve trang chu.
+app.get("/api/sso/login", async (req: any, res) => {
+  const token = String(req.query?.token || "");
+  const entry = SSO_TOKENS.get(token);
+  if (!entry || entry.exp < Date.now()) {
+    return res.status(401).send("Token SSO het han hoac khong hop le. Vui long thu lai.");
+  }
+  SSO_TOKENS.delete(token); // Dung 1 lan
+
+  try {
+    const user = await sqlPool.query(
+      `SELECT id, username, role, workshop_id, full_name FROM user_accounts WHERE username = $1 AND active = true LIMIT 1`,
+      [entry.username]
+    );
+    if (!user.rows.length) return res.status(404).send("Tai khoan SSO khong ton tai.");
+
+    const u = user.rows[0];
+    const sessionToken = require("crypto").randomBytes(32).toString("hex");
+    const tokenHash = require("crypto").createHash("sha256").update(sessionToken).digest("hex");
+    await sqlPool.query(
+      `INSERT INTO user_sessions (token_hash, user_id, created_at, expires_at)
+       VALUES ($1, $2, now(), now() + interval '30 days')`,
+      [tokenHash, u.id]
+    );
+    res.cookie("auth_session", sessionToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      maxAge: 30 * 24 * 60 * 60 * 1000
+    });
+    res.redirect("/");
+  } catch (e: any) {
+    res.status(500).send("Loi he thong: " + e.message);
+  }
+});
 
 // Only reachable without a session while needsBootstrap() is true — the escape hatch
 // for creating the very first super admin on an empty database.

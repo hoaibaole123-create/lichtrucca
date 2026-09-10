@@ -190,6 +190,25 @@ export default function App() {
     setCurrentUser(user);
   };
 
+  const resetLeaveForm = () => {
+    setLeaveData({
+      name: '',
+      birthYear: '1980',
+      chucDanh: staffData[0]?.[0] || '',
+      kip: '1',
+      startDate: fmtIn(new Date()),
+      endDate: fmtIn(new Date()),
+      reason: 'Giải quyết việc riêng gia đình',
+      phone: '',
+      leaveYear: String(new Date().getFullYear()),
+      location: 'Gia Lai',
+      hasLeavePermit: false
+    });
+    setAdditionalLeaves([]);
+    setNguonDonChinh(null);
+    setTuWordChinh(false);
+  };
+
   const handleLogout = () => {
     fetch(API_BASE + '/api/auth/logout', { method: 'POST' }).catch(() => {});
     localStorage.removeItem('auth_user');
@@ -197,6 +216,7 @@ export default function App() {
     setWorkshops([]);
     setActiveWorkshop(null);
     setShowWorkshopManager(false);
+    resetLeaveForm();
   };
 
   const [signatures, setSignatures] = useState<Record<string, string>>({});
@@ -570,10 +590,12 @@ export default function App() {
     }
   };
 
-  // Tu dong tai nhat ky khi vao tab nhan su
+  // Tu dong tai nhat ky khi vao tab nhan su.
+  // Dong thoi xoa form don nghi phep khi roi khoi tab leave.
   useEffect(() => {
     if (activeTab === 'staff') fetchSwapHistory();
-  }, [activeTab, fetchSwapHistory]);
+    if (activeTab !== 'leave') resetLeaveForm();
+  }, [activeTab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleUpdateStaff = (r: number, c: number, val: string) => {
     const newData = [...staffData];

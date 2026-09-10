@@ -1975,7 +1975,8 @@ app.get("/api/sheets/leave-requests", async (req, res) => {
   try {
     const result = await sqlPool.query(
       `SELECT r.id, r.name, r.birth_year, r.chuc_danh, r.kip, r.start_date, r.end_date, r.reason, r.phone, r.location,
-              r.status, r.created_at, r.leave_year, r.has_leave_permit, r.distance_km, r.travel_days, r.leave_days,
+              r.status, r.created_at, r.inserted_at, r.scheduled_at,
+              r.leave_year, r.has_leave_permit, r.distance_km, r.travel_days, r.leave_days,
               COALESCE(
                 (SELECT json_agg(json_build_object('year', a.leave_year, 'days', a.days) ORDER BY a.leave_year)
                  FROM leave_allocations a WHERE a.leave_id = r.id),
@@ -1997,7 +1998,12 @@ app.get("/api/sheets/leave-requests", async (req, res) => {
       phone: row.phone || "",
       location: row.location || "",
       status: row.status || "",
+      // createdAt la chuoi da dinh dang san theo gio Viet Nam tu luc nop don.
+      // insertedAt la moc that trong CSDL, dung khi createdAt rong (don cu
+      // hoac don nhap tu nguon khac). scheduledAt NULL = chua xep lich.
       createdAt: row.created_at || "",
+      insertedAt: row.inserted_at || null,
+      scheduledAt: row.scheduled_at || null,
       leaveYear: row.leave_year || "",
       hasLeavePermit: row.has_leave_permit === true,
       distanceKm: row.distance_km,
@@ -2261,11 +2267,14 @@ app.post("/api/leave/trace", async (req: any, res) => {
       }
 
       await client.query(
+        // scheduled_at = now(): dong nay sinh ra da o trang thai "Da xep lich"
+        // nen moc xep lich chinh la bay gio — khong co buoc doi trang thai nao
+        // dien ra sau de ghi moc.
         `INSERT INTO leave_requests
            (id, name, birth_year, chuc_danh, kip, start_date, end_date, reason, phone,
             location, status, created_at, leave_year, has_leave_permit,
-            distance_km, travel_days, leave_days, workshop_id)
-         VALUES ($1,$2,'',$3,$4,$5,$6,$7,'',$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+            distance_km, travel_days, leave_days, workshop_id, scheduled_at)
+         VALUES ($1,$2,'',$3,$4,$5,$6,$7,'',$8,$9,$10,$11,$12,$13,$14,$15,$16, now())`,
         [
           id,
           name,
@@ -2323,8 +2332,15 @@ app.post("/api/sheets/leave-requests/update-status", async (req, res) => {
   }
 
   try {
+    // COALESCE giu nguyen moc xep lich dau tien: bam xuat lai lan hai khong
+    // duoc doi ngay da xep. Nguoc lai, tra don ve "Cho phan ca" thi xoa moc —
+    // don chua xep thi khong duoc mang ngay xep lich.
     const result = await sqlPool.query(
-      `UPDATE leave_requests SET status = $1 WHERE workshop_id = $2 AND id = ANY($3::text[]) RETURNING id`,
+      `UPDATE leave_requests
+          SET status = $1,
+              scheduled_at = CASE WHEN $1 = 'Chờ phân ca' THEN NULL
+                                  ELSE COALESCE(scheduled_at, now()) END
+        WHERE workshop_id = $2 AND id = ANY($3::text[]) RETURNING id`,
       [status, workshopId, ids]
     );
 

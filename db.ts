@@ -87,6 +87,14 @@ export async function initLeaveTables() {
       ADD COLUMN IF NOT EXISTS leave_days INTEGER NOT NULL DEFAULT 0;
   `);
 
+  // Thoi diem don duoc xep lich di ca. NULL = chua xep. Cac don da xep TRUOC
+  // khi cot nay ra doi se mai mai NULL — khong the doan nguoc thoi diem do tu
+  // du lieu cu, nen giao dien phai hien "—" chu khong duoc bia ra mot ngay.
+  await pool.query(`
+    ALTER TABLE leave_requests
+      ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ;
+  `);
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS leave_balances (
       id SERIAL PRIMARY KEY,

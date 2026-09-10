@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import mammoth from 'mammoth';
 import * as XLSX from 'xlsx';
 import { DEFAULT_STAFF, SHIFTS } from './constants';
-import { fmtVN, fmtIn, dayN, timNghi, timThay, abbrev, xacDinhCa } from './utils/shiftHelpers';
+import { fmtVN, fmtVNGio, fmtIn, dayN, timNghi, timThay, abbrev, xacDinhCa } from './utils/shiftHelpers';
 import { buildMultiLeaveResults, Leave, ResultItem } from './utils/Quytacxacdinhcatructhay';
 import { exportWord, generateWordBlob, exportSwapDoc, generateSwapBlob, exportLeaveRequestDoc, generateLeaveRequestBlob, exportAllDocsZip } from './utils/wordExport';
 import { renderAsync } from 'docx-preview';
@@ -1090,14 +1090,15 @@ export default function App() {
       'Địa điểm': l.location,
       'Điện thoại': l.phone,
       'Trạng thái': l.status,
-      'Ngày tạo đơn': l.createdAt
+      'Ngày tạo đơn': l.createdAt || fmtVNGio(l.insertedAt),
+      'Ngày xếp lịch đi ca': fmtVNGio(l.scheduledAt)
     }));
 
     const worksheet = XLSX.utils.json_to_sheet(rows);
     worksheet['!cols'] = [
       { wch: 5 }, { wch: 22 }, { wch: 16 }, { wch: 6 }, { wch: 11 }, { wch: 11 },
       { wch: 15 }, { wch: 20 }, { wch: 14 }, { wch: 12 }, { wch: 28 }, { wch: 12 },
-      { wch: 13 }, { wch: 12 }, { wch: 18 }
+      { wch: 13 }, { wch: 12 }, { wch: 18 }, { wch: 18 }
     ];
 
     const workbook = XLSX.utils.book_new();
@@ -2262,9 +2263,11 @@ export default function App() {
                       <th className="text-left p-2 font-bold">Họ và tên</th>
                       <th className="text-left p-2 font-bold">Chức danh</th>
                       <th className="p-2 font-bold">Kíp</th>
-                      <th className="text-left p-2 font-bold">Thời gian</th>
+                      <th className="text-left p-2 font-bold">Thời gian nghỉ</th>
                       <th className="p-2 font-bold">Số ngày phép</th>
                       <th className="text-left p-2 font-bold">Năm phép</th>
+                      <th className="text-left p-2 font-bold whitespace-nowrap">Tạo đơn lúc</th>
+                      <th className="text-left p-2 font-bold whitespace-nowrap">Xếp lịch lúc</th>
                       <th className="text-left p-2 font-bold">Trạng thái</th>
                     </tr>
                   </thead>
@@ -2282,6 +2285,16 @@ export default function App() {
                           {Array.isArray(l.allocations) && l.allocations.length > 0
                             ? l.allocations.map((a: any) => `${a.days} (${a.year})`).join(', ')
                             : '—'}
+                        </td>
+                        {/* createdAt da la chuoi gio Viet Nam san; chi khi no
+                            rong moi phai dinh dang insertedAt tu CSDL. */}
+                        <td className="p-2 text-slate-600 whitespace-nowrap">
+                          {l.createdAt || fmtVNGio(l.insertedAt) || '—'}
+                        </td>
+                        <td className="p-2 whitespace-nowrap">
+                          {l.scheduledAt
+                            ? <span className="text-slate-600">{fmtVNGio(l.scheduledAt)}</span>
+                            : <span className="text-slate-400 italic" title="Đơn được xếp lịch trước khi hệ thống bắt đầu ghi mốc thời gian">—</span>}
                         </td>
                         <td className="p-2">
                           <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 rounded-md text-[11px] font-semibold">{l.status}</span>

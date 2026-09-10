@@ -7,6 +7,20 @@ export function fmtVN(d: any) {
   return ('0' + date.getDate()).slice(-2) + '/' + ('0' + (date.getMonth() + 1)).slice(-2) + '/' + date.getFullYear();
 }
 
+// Ngay + gio theo mui gio Viet Nam, dung cho cac moc thoi diem lay tu CSDL
+// (kieu TIMESTAMPTZ, tra ve duoi dang chuoi ISO). Tra '' khi khong co du lieu
+// de noi goi biet ma hien dau gach thay vi "Invalid Date".
+export function fmtVNGio(d: any) {
+  if (!d) return '';
+  const date = (typeof d === 'string') ? new Date(d) : d;
+  if (isNaN(date.getTime())) return '';
+  return date.toLocaleString('vi-VN', {
+    timeZone: 'Asia/Ho_Chi_Minh',
+    day: '2-digit', month: '2-digit', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', hour12: false
+  });
+}
+
 export function fmtIn(d: any) {
   const date = (typeof d === 'string') ? new Date(d + (d.includes('T') ? '' : 'T00:00:00')) : d;
   if (isNaN(date.getTime())) return '';

@@ -1175,7 +1175,7 @@ app.post("/api/sso/token", async (req: any, res) => {
   if (req.body?.secret !== secret) return res.status(401).json({ ok: false, error: "Sai secret" });
 
   const username = req.body?.username || "vhialy";
-  const token = require("crypto").randomBytes(32).toString("hex");
+  const token = crypto.randomBytes(32).toString("hex");
   SSO_TOKENS.set(token, { username, exp: Date.now() + 60_000 });
   res.json({ ok: true, token });
 });
@@ -1198,8 +1198,8 @@ app.get("/api/sso/login", async (req: any, res) => {
     if (!user.rows.length) return res.status(404).send("Tai khoan SSO khong ton tai.");
 
     const u = user.rows[0];
-    const sessionToken = require("crypto").randomBytes(32).toString("hex");
-    const tokenHash = require("crypto").createHash("sha256").update(sessionToken).digest("hex");
+    const sessionToken = crypto.randomBytes(32).toString("hex");
+    const tokenHash = crypto.createHash("sha256").update(sessionToken).digest("hex");
     await sqlPool.query(
       `INSERT INTO user_sessions (token_hash, user_id, created_at, expires_at)
        VALUES ($1, $2, now(), now() + interval '30 days')`,

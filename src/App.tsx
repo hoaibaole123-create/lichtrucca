@@ -1821,7 +1821,10 @@ export default function App() {
             {waitingLeaves.length === 0 ? (
               <p className="text-[12px] text-var(--txt2) italic">Không có đơn xin nghỉ phép nào ở trạng thái Chờ phân ca.</p>
             ) : (
-              <div className="max-h-[220px] overflow-y-auto pr-1">
+              // Khong khoa chieu cao: danh sach cao dan theo so don, hien du
+              // tat ca thay vi cuon trong mot o 220px. Trang van cuon binh
+              // thuong nen nhieu don chi lam the dai them, khong che mat gi.
+              <div className="pr-1">
                 <div className="flex flex-col gap-2">
                   {waitingLeaves.map((leave) => {
                     const isSelected = selectedWaitingLeaveIds.includes(leave.id);

@@ -1191,28 +1191,19 @@ app.get("/api/sso/login", async (req: any, res) => {
   SSO_TOKENS.delete(token); // Dung 1 lan
 
   try {
-    const user = await sqlPool.query(
-      `SELECT id, username, role, workshop_id, full_name FROM user_accounts WHERE username = $1 AND active = true LIMIT 1`,
+    // Dung dung cach tra tai khoan nhu /api/auth/login, va dung lai
+    // createSession + setSessionCookie de cookie mang dung ten "sid".
+    const result = await sqlPool.query(
+      `SELECT * FROM user_accounts WHERE lower(username) = lower(trim($1))`,
       [entry.username]
     );
-    if (!user.rows.length) return res.status(404).send("Tai khoan SSO khong ton tai.");
+    const acc = result.rows[0];
+    if (!acc) return res.status(404).send("Tai khoan SSO khong ton tai: " + entry.username);
 
-    const u = user.rows[0];
-    const sessionToken = crypto.randomBytes(32).toString("hex");
-    const tokenHash = crypto.createHash("sha256").update(sessionToken).digest("hex");
-    await sqlPool.query(
-      `INSERT INTO user_sessions (token_hash, user_id, created_at, expires_at)
-       VALUES ($1, $2, now(), now() + interval '30 days')`,
-      [tokenHash, u.id]
-    );
-    res.cookie("auth_session", sessionToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-      maxAge: 30 * 24 * 60 * 60 * 1000
-    });
+    setSessionCookie(req, res, await createSession(acc.id));
     res.redirect("/");
   } catch (e: any) {
+    console.error("SSO login that bai:", e);
     res.status(500).send("Loi he thong: " + e.message);
   }
 });

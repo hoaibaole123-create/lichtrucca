@@ -13,3 +13,11 @@ video/_tieng/
 video/_anh_video/
 video/gioi-thieu-ung-dung.mp4
 video/gioi-thieu-ung-dung.html
+
+# Video build artifacts
+video/_nen/
+video/__pycache__/
+video/_tieng/
+video/_khung/
+video/_anh_video/
+gioi-thieu-ung-dung.mp4

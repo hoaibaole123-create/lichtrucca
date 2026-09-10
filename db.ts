@@ -220,6 +220,27 @@ export async function initLeaveTables() {
   await pool.query(`CREATE INDEX IF NOT EXISTS audit_log_at_idx ON audit_log(at DESC);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS audit_log_workshop_idx ON audit_log(workshop_id);`);
 
+  // Nhat ky doi ca: ghi lai moi lan P1 va P2 hoan doi ca nhau.
+  // date1/shift1 la ca cua P1 ma P2 di thay, va nguoc lai.
+  // Neu chi doi mot chieu (P2 di thay P1 nhung khong co ngay nguoc lai) thi
+  // date2/shift2 de null.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS shift_swaps (
+      id        BIGSERIAL PRIMARY KEY,
+      at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+      workshop_id TEXT,
+      person1   TEXT NOT NULL,
+      person2   TEXT NOT NULL,
+      date1     DATE,
+      shift1    TEXT,
+      date2     DATE,
+      shift2    TEXT,
+      ghi_boi   TEXT
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS shift_swaps_at_idx ON shift_swaps(at DESC);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS shift_swaps_ws_idx ON shift_swaps(workshop_id);`);
+
   // Server-side sessions. Only the SHA-256 of the session token is stored, so a
   // database leak cannot be replayed as a valid login. Rows are removed on logout
   // and lazily pruned once expired.

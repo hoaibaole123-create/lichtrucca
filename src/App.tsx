@@ -333,6 +333,14 @@ export default function App() {
   const [selectedWaitingLeaveIds, setSelectedWaitingLeaveIds] = useState<string[]>([]);
   const [isSavingLeaveToSheets, setIsSavingLeaveToSheets] = useState(false);
 
+  // Nhat ky doi ca
+  const [swapHistory, setSwapHistory] = useState<any[]>([]);
+  const [isLoadingSwapHistory, setIsLoadingSwapHistory] = useState(false);
+  const [swapHistoryDeleteMonth, setSwapHistoryDeleteMonth] = useState(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  });
+
   // "Bảng duyệt nghỉ phép" report: leaves already scheduled (status != Chờ phân ca)
   const [approvedSearch, setApprovedSearch] = useState('');
   const [approvedYearFilter, setApprovedYearFilter] = useState('all');
@@ -522,6 +530,50 @@ export default function App() {
   useEffect(() => {
     fetchWaitingLeaves();
   }, [fetchWaitingLeaves]);
+
+  const fetchSwapHistory = useCallback(async () => {
+    if (!activeWorkshop) return;
+    setIsLoadingSwapHistory(true);
+    try {
+      const res = await fetch(API_BASE + '/api/comca/doi-ca/history');
+      if (res.ok) {
+        const data = await res.json();
+        setSwapHistory(data.rows || []);
+      }
+    } catch (e) {
+      console.error('Lỗi tải nhật ký đổi ca:', e);
+    } finally {
+      setIsLoadingSwapHistory(false);
+    }
+  }, [activeWorkshop]);
+
+  const deleteSwapHistoryMonth = async () => {
+    if (!swapHistoryDeleteMonth) return;
+    const [y, m] = swapHistoryDeleteMonth.split('-');
+    const label = `tháng ${m}/${y}`;
+    if (!window.confirm(`Xóa toàn bộ nhật ký đổi ca của ${label}?`)) return;
+    try {
+      const r = await fetch(API_BASE + '/api/comca/doi-ca/history', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ thang: swapHistoryDeleteMonth }),
+      });
+      const kq = await r.json();
+      if (kq.ok) {
+        setAlert(`✅ Đã xóa ${kq.deleted} bản ghi của ${label}`);
+        fetchSwapHistory();
+      } else {
+        setAlert('❌ Xóa thất bại: ' + kq.error);
+      }
+    } catch (e: any) {
+      setAlert('❌ Lỗi kết nối: ' + e.message);
+    }
+  };
+
+  // Tu dong tai nhat ky khi vao tab nhan su
+  useEffect(() => {
+    if (activeTab === 'staff') fetchSwapHistory();
+  }, [activeTab, fetchSwapHistory]);
 
   const handleUpdateStaff = (r: number, c: number, val: string) => {
     const newData = [...staffData];
@@ -2175,6 +2227,90 @@ export default function App() {
               </div>
             )}
           </div>
+
+          {isWorkshopAdmin && (
+          <div className="card" id="swap-history-card">
+            <div className="ctitle">
+              🔄 Nhật ký đổi ca
+              <button
+                className="px-2 py-1 text-xs bg-white text-sky-700 border border-sky-300 rounded hover:bg-sky-100 font-medium cursor-pointer transition-colors"
+                onClick={fetchSwapHistory}
+                disabled={isLoadingSwapHistory}
+              >
+                {isLoadingSwapHistory ? '⏳' : '🔄'} Cập nhật
+              </button>
+            </div>
+            <div className="flex items-center gap-2 mt-3 mb-3 flex-wrap">
+              <span className="text-[12px] text-slate-500">Xóa nhật ký tháng:</span>
+              <select
+                value={swapHistoryDeleteMonth.split('-')[1]}
+                onChange={e => setSwapHistoryDeleteMonth(`${swapHistoryDeleteMonth.split('-')[0]}-${e.target.value}`)}
+                className="px-2 py-1 text-xs border border-slate-200 rounded-lg"
+              >
+                {Array.from({length: 12}, (_, i) => String(i + 1).padStart(2, '0')).map(m => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+              <span className="text-[12px] text-slate-400">/</span>
+              <select
+                value={swapHistoryDeleteMonth.split('-')[0]}
+                onChange={e => setSwapHistoryDeleteMonth(`${e.target.value}-${swapHistoryDeleteMonth.split('-')[1]}`)}
+                className="px-2 py-1 text-xs border border-slate-200 rounded-lg"
+              >
+                {Array.from({length: 5}, (_, i) => String(new Date().getFullYear() - 2 + i)).map(y => (
+                  <option key={y} value={y}>{y}</option>
+                ))}
+              </select>
+              <button
+                className="px-2.5 py-1 text-xs bg-red-50 text-red-700 border border-red-200 rounded hover:bg-red-100 font-medium cursor-pointer transition-colors"
+                onClick={deleteSwapHistoryMonth}
+              >
+                🗑 Xóa tháng này
+              </button>
+            </div>
+            {swapHistory.length === 0 ? (
+              <p className="text-[12px] text-var(--txt2) italic">
+                {isLoadingSwapHistory ? 'Đang tải...' : 'Chưa có lần đổi ca nào được ghi.'}
+              </p>
+            ) : (
+              <div className="max-h-[320px] overflow-auto rounded-lg border border-slate-200">
+                <table className="w-full text-[12px] border-collapse">
+                  <thead className="sticky top-0 bg-slate-100 text-slate-700">
+                    <tr>
+                      <th className="text-left p-2 font-bold whitespace-nowrap">Thời gian</th>
+                      <th className="text-left p-2 font-bold">P1</th>
+                      <th className="text-center p-2 font-bold whitespace-nowrap">Ngày 1 / Ca</th>
+                      <th className="text-left p-2 font-bold">P2</th>
+                      <th className="text-center p-2 font-bold whitespace-nowrap">Ngày 2 / Ca</th>
+                      <th className="text-left p-2 font-bold">Người thực hiện</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {swapHistory.map((r: any) => {
+                      const at = new Date(r.at);
+                      const fmt = (d: string | null) => d ? new Date(d).toLocaleDateString('vi-VN', { day:'2-digit', month:'2-digit', year:'numeric' }) : '—';
+                      const fmtAt = at.toLocaleDateString('vi-VN', { day:'2-digit', month:'2-digit' }) + ' ' + at.toLocaleTimeString('vi-VN', { hour:'2-digit', minute:'2-digit' });
+                      return (
+                        <tr key={r.id} className="border-t border-slate-100 hover:bg-slate-50">
+                          <td className="p-2 text-slate-500 whitespace-nowrap">{fmtAt}</td>
+                          <td className="p-2 font-semibold text-slate-800">{r.person1}</td>
+                          <td className="p-2 text-center text-slate-600 whitespace-nowrap">
+                            {r.date1 ? <><span>{fmt(r.date1)}</span> <span className="ml-1 px-1.5 py-0.5 bg-blue-100 text-blue-800 rounded font-bold">{r.shift1}</span></> : '—'}
+                          </td>
+                          <td className="p-2 font-semibold text-slate-800">{r.person2}</td>
+                          <td className="p-2 text-center text-slate-600 whitespace-nowrap">
+                            {r.date2 ? <><span>{fmt(r.date2)}</span> <span className="ml-1 px-1.5 py-0.5 bg-amber-100 text-amber-800 rounded font-bold">{r.shift2}</span></> : '—'}
+                          </td>
+                          <td className="p-2 text-slate-500 italic">{r.ghi_boi || '—'}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+          )}
 
           <div className="card" id="system-config-card">
             <div className="ctitle">Cấu hình hệ thống</div>

@@ -1167,7 +1167,7 @@ async function requireAuth(req: any, res: any, next: any) {
 
   // Đồng bộ cơm ca chạy máy-với-máy: cho phép gọi bằng khoá chung thay vì phiên đăng nhập.
   // Khoá nằm trong biến môi trường, không có khoá thì lối này đóng.
-  if (path === "/api/comca/sync" || path === "/api/comca/doi-ca") {
+  if (path === "/api/comca/sync" || path === "/api/comca/doi-ca" || path.startsWith("/api/comca/doi-ca/history")) {
     const key = process.env.COMCA_API_KEY;
     if (key && req.headers["x-api-key"] === key) return next();
   }
@@ -2307,7 +2307,7 @@ app.post("/api/sheets/leave-requests/delete", async (req, res) => {
 // Đẩy thay đổi ca sang app BẢNG THEO DÕI CƠM CA (Supabase).
 // Đây là nguồn lưu chính; Google Sheets chỉ còn là bản sao tuỳ chọn.
 // Không bao giờ ném lỗi ra ngoài: cơm ca hỏng thì việc thay ca vẫn tính là xong.
-async function syncComCa(updates: any[], workshopId: string | null) {
+async function syncComCa(updates: any[], workshopId: string | null, nguon = "lichtrucca") {
   const url = process.env.COMCA_URL;
   if (!url || !updates?.length) return { skipped: "chưa cấu hình COMCA_URL" };
 
@@ -2324,7 +2324,7 @@ async function syncComCa(updates: any[], workshopId: string | null) {
         "Content-Type": "application/json",
         "x-api-key": process.env.COMCA_API_KEY || ""
       },
-      body: JSON.stringify({ source: "lichtrucca", workshopId, updates })
+      body: JSON.stringify({ source: nguon, workshopId, updates })
     });
 
     const kq: any = await resp.json();
@@ -2420,8 +2420,64 @@ app.post("/api/comca/doi-ca", async (req: any, res) => {
   const updates = [...bang.values()];
   if (!updates.length) return res.json({ ok: false, error: "Khong co ca nao de doi" });
 
-  const kq = await syncComCa(updates, workshopId);
+  const kq = await syncComCa(updates, workshopId, "doi-ca");
+
+  // Ghi nhat ky doi ca vao DB (bat ke com ca co thanh cong hay khong).
+  try {
+    const user = (req as any).user;
+    await sqlPool.query(
+      `INSERT INTO shift_swaps (workshop_id, person1, person2, date1, shift1, date2, shift2, ghi_boi)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [
+        workshopId,
+        p1, p2,
+        co1 ? date1 : null, co1 ? String(shift1).toUpperCase() : null,
+        co2 ? date2 : null, co2 ? String(shift2).toUpperCase() : null,
+        user?.username || user?.name || null
+      ]
+    );
+  } catch (e: any) {
+    console.error("Ghi nhat ky doi ca that bai:", e.message);
+  }
+
   res.json({ ok: true, sent: updates.length, comca: kq });
+});
+
+// Xem lai lich su doi ca. Lay 60 ban ghi gan nhat cua phan xuong hien tai.
+app.get("/api/comca/doi-ca/history", async (req: any, res) => {
+  const workshopId = req.user?.workshopId || req.query?.workshopId || null;
+  try {
+    const rows = await sqlPool.query(
+      `SELECT id, at, person1, person2, date1, shift1, date2, shift2, ghi_boi
+         FROM shift_swaps
+        WHERE ($1::text IS NULL OR workshop_id = $1)
+        ORDER BY at DESC`,
+      [workshopId === "all" ? null : workshopId]
+    );
+    res.json({ ok: true, rows: rows.rows });
+  } catch (e: any) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+// Xoa nhat ky doi ca theo thang (YYYY-MM). Chi xoa trong phan xuong cua nguoi goi.
+app.delete("/api/comca/doi-ca/history", async (req: any, res) => {
+  const { thang } = req.body || {};          // "2026-09"
+  const workshopId = req.user?.workshopId || null;
+  if (!thang || !/^\d{4}-\d{2}$/.test(thang)) {
+    return res.json({ ok: false, error: "Tháng không hợp lệ (định dạng YYYY-MM)" });
+  }
+  try {
+    const r = await sqlPool.query(
+      `DELETE FROM shift_swaps
+        WHERE ($1::text IS NULL OR workshop_id = $1)
+          AND to_char(at AT TIME ZONE 'Asia/Ho_Chi_Minh', 'YYYY-MM') = $2`,
+      [workshopId === "all" ? null : workshopId, thang]
+    );
+    res.json({ ok: true, deleted: r.rowCount });
+  } catch (e: any) {
+    res.json({ ok: false, error: e.message });
+  }
 });
 
 app.post("/api/sheets/update", async (req, res) => {

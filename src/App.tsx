@@ -190,6 +190,9 @@ export default function App() {
     setCurrentUser(user);
   };
 
+  // Moi tab co mot ham don rieng. Truoc day resetLeaveForm() xoa luon
+  // additionalLeaves/nguonDonChinh/tuWordChinh — von thuoc tab lich truc chu
+  // khong phai tab don nghi phep — nen roi tab nay lai xoa du lieu cua tab kia.
   const resetLeaveForm = () => {
     setLeaveData({
       name: '',
@@ -204,9 +207,34 @@ export default function App() {
       location: 'Gia Lai',
       hasLeavePermit: false
     });
+  };
+
+  const resetScheduleForm = () => {
+    setNgayBatDau(fmtIn(new Date()));
+    const sau = new Date();
+    sau.setDate(sau.getDate() + 7);
+    setNgayKetThuc(fmtIn(sau));
+    setChucDanh('');
+    setKipNghi('');
     setAdditionalLeaves([]);
     setNguonDonChinh(null);
     setTuWordChinh(false);
+    // Ket qua phan cong sinh ra tu chinh bon o tren. Xoa o ma giu bang ket qua
+    // thi bang do khong con ung voi cai gi ca.
+    setCurrentResult(null);
+    setSelectedWaitingLeaveIds([]);
+  };
+
+  const resetSwapForm = () => {
+    setSwapData({
+      date1: fmtIn(new Date()),
+      date2: fmtIn(new Date()),
+      person1: '',
+      person2: '',
+      shift1: 'N',
+      shift2: 'K'
+    });
+    setSwapChucDanh(staffData[0]?.[0] || '');
   };
 
   const handleLogout = () => {
@@ -217,6 +245,8 @@ export default function App() {
     setActiveWorkshop(null);
     setShowWorkshopManager(false);
     resetLeaveForm();
+    resetScheduleForm();
+    resetSwapForm();
   };
 
   const [signatures, setSignatures] = useState<Record<string, string>>({});
@@ -591,11 +621,25 @@ export default function App() {
   };
 
   // Tu dong tai nhat ky khi vao tab nhan su.
-  // Dong thoi xoa form don nghi phep khi roi khoi tab leave.
+  //
+  // Dong thoi xoa form cua tab vua roi khoi. Chi xoa tab MINH VUA ROI, khong
+  // xoa tat ca: neu quet sach moi tab thi sang tab khac roi quay lai cung mat
+  // du lieu, ma con xoa ca thu nguoi dung dang lam do dang o noi khac.
+  const tabTruoc = useRef(activeTab);
   useEffect(() => {
     if (activeTab === 'staff') fetchSwapHistory();
-    if (activeTab !== 'leave') resetLeaveForm();
-  }, [activeTab]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    const cu = tabTruoc.current;
+    tabTruoc.current = activeTab;
+    if (cu === activeTab) return;      // lan chay dau tien, chua roi tab nao
+
+    if (cu === 'leave') resetLeaveForm();
+    if (cu === 'schedule') resetScheduleForm();
+    if (cu === 'swap') resetSwapForm();
+    // fetchSwapHistory nam trong deps de nhat ky tai lai khi doi phan xuong.
+    // An toan: luc do activeTab khong doi nen chot `cu === activeTab` o tren
+    // da chan phan xoa form roi.
+  }, [activeTab, fetchSwapHistory]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleUpdateStaff = (r: number, c: number, val: string) => {
     const newData = [...staffData];

@@ -962,13 +962,54 @@ export default function App() {
     }
   };
 
+  // Danh dau cac don dang chon la "Da xu ly" roi tai lai danh sach cho.
+  // Dung chung cho ca hai loi xuat: xuat rieng file lich truc, va xuat tron bo
+  // ZIP. Tra ve cau thong bao de noi goi ghep vao alert cua rieng no.
+  //
+  // Khong nem loi: xuat file da xong roi, hong buoc nay thi bao cho nguoi dung
+  // biet chu khong duoc lam hong ca thao tac xuat.
+  const xacNhanDonDaXuLy = async (): Promise<string> => {
+    if (selectedWaitingLeaveIds.length === 0) return '';
+    try {
+      const res = await fetch(API_BASE + '/api/sheets/leave-requests/update-status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ids: selectedWaitingLeaveIds,
+          status: "Đã xử lý",
+          workshopId: activeWorkshop?.id
+        })
+      });
+      if (res.ok) {
+        fetchWaitingLeaves();
+        return ` và xác nhận hoàn thành ${selectedWaitingLeaveIds.length} đơn nghỉ phép`;
+      }
+      const err = await res.json().catch(() => ({}));
+      return ` (nhưng lỗi cập nhật trạng thái đơn: ${err.error || res.status})`;
+    } catch (e: any) {
+      console.error('Loi xac nhan don da xu ly:', e);
+      return ` (nhưng lỗi cập nhật trạng thái đơn: ${e.message})`;
+    }
+  };
+
   const handleExportWord = async () => {
     setIsProcessing(true);
-    await exportWord(currentResult, docConfig);
-    await ghiVetLichSu();
-    // Xuat 1 don cung phai bao com ca, khong doi den luc xuat tron bo ZIP
-    await pushToComCa();
-    setIsProcessing(false);
+    try {
+      await exportWord(currentResult, docConfig);
+      await ghiVetLichSu();
+      // Xuat lich truc cung la luc don nghi phep coi nhu da xu ly xong.
+      const phanDon = await xacNhanDonDaXuLy();
+      // Xuat 1 don cung phai bao com ca, khong doi den luc xuat tron bo ZIP
+      const phanCom = await pushToComCa();
+      setAlert(`✅ Đã xuất file lịch trực thay ca${phanDon}${phanCom}!`);
+    } catch (e: any) {
+      console.error(e);
+      setAlert(`❌ Lỗi khi xuất file Word: ${e.message}`);
+    } finally {
+      // finally: truoc day khong co, nen mot loi o exportWord se ket nut bam
+      // o trang thai "dang xu ly" mai mai.
+      setIsProcessing(false);
+    }
   };
 
   useEffect(() => {
@@ -1203,31 +1244,13 @@ export default function App() {
       // Word) chua he co mat trong lich su nghi phep — ghi vet ho o day.
       await ghiVetLichSu();
 
-      // 2. Update waiting leaves status to 'Đã xử lý'
-      if (selectedWaitingLeaveIds.length > 0) {
-        const updateRes = await fetch(API_BASE + '/api/sheets/leave-requests/update-status', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            ids: selectedWaitingLeaveIds,
-            status: "Đã xử lý",
-            workshopId: activeWorkshop?.id
-          })
-        });
-
-        if (updateRes.ok) {
-          setAlert("✅ Đã xuất trọn bộ hồ sơ dạng ZIP và cập nhật trạng thái 'Đã xử lý'!");
-          fetchWaitingLeaves();
-        } else {
-          const errData = await updateRes.json();
-          setAlert(`✅ Xuất hồ sơ thành công nhưng lỗi cập nhật trạng thái: ${errData.error || ""}`);
-        }
-      } else {
-        setAlert("✅ Đã tải xuống hồ sơ dạng ZIP thành công!");
-      }
+      // 2. Danh dau don da xu ly — dung chung ham voi loi xuat file rieng le
+      const phanDon = await xacNhanDonDaXuLy();
 
       // 3. Đồng bộ sang app BẢNG THEO DÕI CƠM CA (lỗi ở đây không làm hỏng việc xuất hồ sơ)
-      await pushToComCa();
+      const phanCom = await pushToComCa();
+
+      setAlert(`✅ Đã tải xuống hồ sơ dạng ZIP${phanDon}${phanCom}!`);
     } catch (e: any) {
       console.error(e);
       setAlert(`❌ Lỗi trong quá trình xuất trọn bộ hồ sơ: ${e.message}`);
@@ -1243,8 +1266,11 @@ export default function App() {
 
   // Đẩy kết quả phân công sang app BẢNG THEO DÕI CƠM CA.
   // Người nghỉ -> F (0 suất), người đi thay -> nhận ca đó (được báo cơm).
-  const pushToComCa = async () => {
-    if (!currentResult) return;
+  // Tra ve mau cau de noi goi ghep vao mot thong bao duy nhat. Truoc day ham
+  // nay tu goi setAlert o cuoi, de len tren thong bao cua noi goi — nguoi dung
+  // chi thay dong bao com ca, khong biet don nghi phep da duoc xac nhan hay chua.
+  const pushToComCa = async (): Promise<string> => {
+    if (!currentResult) return '';
 
     // Ngay la doi tuong Date. JSON.stringify se doi sang gio UTC, ma VN = UTC+7
     // nen 00:00 ngay 04 thanh 2026-09-03T17:00Z -> ben cong com ca doc ra ngay 03.
@@ -1282,10 +1308,10 @@ export default function App() {
       const kq = await r.json();
       // Chi tiet nam o console cho luc can tra, tren man hinh chi mot dong ngan
       console.log('Đồng bộ cơm ca:', kq);
-      setAlert(kq?.comca?.ok ? '✅ Đã cập nhật bảng báo cơm' : '❌ Chưa cập nhật được bảng báo cơm');
+      return kq?.comca?.ok ? ', đã cập nhật bảng báo cơm' : ' (chưa cập nhật được bảng báo cơm)';
     } catch (e: any) {
       console.error('Không đồng bộ được bảng cơm ca:', e);
-      setAlert('❌ Chưa cập nhật được bảng báo cơm');
+      return ' (chưa cập nhật được bảng báo cơm)';
     }
   };
 

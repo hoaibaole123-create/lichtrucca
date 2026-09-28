@@ -1598,18 +1598,38 @@ export default function App() {
           </div>
           <div className="field">
             <label>Ngày bắt đầu nghỉ</label>
-            <input 
-              type="date" 
-              value={leaveData.startDate} 
-              onChange={e => setLeaveData({...leaveData, startDate: e.target.value})} 
+            <input
+              type="date"
+              value={leaveData.startDate}
+              onChange={e => {
+                // Doi ngay bat dau ra sau ngay ket thuc thi keo ngay ket thuc
+                // theo, thay vi de lai mot khoang nghi am.
+                const batDau = e.target.value;
+                setLeaveData(cu => ({
+                  ...cu,
+                  startDate: batDau,
+                  endDate: (batDau && cu.endDate && cu.endDate < batDau) ? batDau : cu.endDate
+                }));
+              }}
             />
           </div>
           <div className="field">
             <label>Ngày kết thúc nghỉ</label>
-            <input 
-              type="date" 
-              value={leaveData.endDate} 
-              onChange={e => setLeaveData({...leaveData, endDate: e.target.value})} 
+            <input
+              type="date"
+              // min chi lam mo ngay trong bo chon lich; go thang van lot qua
+              // duoc, nen phai chan lai mot lan nua o onChange.
+              min={leaveData.startDate || undefined}
+              value={leaveData.endDate}
+              onChange={e => {
+                // Chuoi dang YYYY-MM-DD nen so sanh truc tiep la dung thu tu
+                // thoi gian, khong can doi sang Date.
+                const ketThuc = e.target.value;
+                setLeaveData(cu => ({
+                  ...cu,
+                  endDate: (ketThuc && cu.startDate && ketThuc < cu.startDate) ? cu.startDate : ketThuc
+                }));
+              }}
             />
           </div>
           <div className="field">

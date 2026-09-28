@@ -2175,7 +2175,14 @@ export default function App() {
 
               {isAdmin && (
                 <button
-                  onClick={() => setShowWorkshopManager(true)}
+                  onClick={() => {
+                    // Tai lai truoc khi mo. Card "Cau hinh he thong" o tab Nhan
+                    // su ghi thang xuong CSDL nhung khong lam moi `workshops`
+                    // trong bo nho, nen bang quan ly nhan duoc ban cu qua props
+                    // — mo ra sua roi luu se ghi de nguoc lai thay doi vua roi.
+                    fetchWorkshops();
+                    setShowWorkshopManager(true);
+                  }}
                   className="w-full py-3 px-4 bg-amber-500 hover:bg-amber-400 text-slate-950 text-sm font-black rounded-xl shadow-md transition-all cursor-pointer flex items-center justify-center gap-2 active:scale-98"
                 >
                   <Settings size={18} />

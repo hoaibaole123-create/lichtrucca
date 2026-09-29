@@ -633,6 +633,12 @@ export default function App() {
     tabTruoc.current = activeTab;
     if (cu === activeTab) return;      // lan chay dau tien, chua roi tab nao
 
+    // Thanh thong bao duoc ve ngoai moi tab nen no dung chung cho ca ung dung:
+    // bao "da xuat file" o tab lich truc van con treo khi sang tab nhan su,
+    // noi cau do khong con y nghia gi. Thong bao thuoc ve viec vua lam, roi
+    // tab la xong viec do.
+    setAlert(null);
+
     if (cu === 'leave') resetLeaveForm();
     if (cu === 'schedule') resetScheduleForm();
     if (cu === 'swap') resetSwapForm();
@@ -1308,7 +1314,10 @@ export default function App() {
       const kq = await r.json();
       // Chi tiet nam o console cho luc can tra, tren man hinh chi mot dong ngan
       console.log('Đồng bộ cơm ca:', kq);
-      return kq?.comca?.ok ? ', đã cập nhật bảng báo cơm' : ' (chưa cập nhật được bảng báo cơm)';
+      // Chay tron khi thanh cong: bao com ca la viec phu chay nen, khong phai
+      // thu nguoi dung vua yeu cau. Chi len tieng khi HONG, vi luc do bang com
+      // ben kia thieu du lieu ma khong ai biet.
+      return kq?.comca?.ok ? '' : ' (chưa cập nhật được bảng báo cơm)';
     } catch (e: any) {
       console.error('Không đồng bộ được bảng cơm ca:', e);
       return ' (chưa cập nhật được bảng báo cơm)';

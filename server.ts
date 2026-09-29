@@ -94,7 +94,7 @@ async function sendZaloNotification(workshopId: string | undefined, data: LeaveN
     try {
       parsedUrl = new URL(webhookUrl);
     } catch (e: any) {
-      resolve({ ok: false, error: "Webhook URL không hợp lệ: " + e.message });
+      resolve({ ok: false, error: "Webhook URL không hợp lệ. Mã tra cứu: " + ghiLoi(e, "webhook URL") });
       return;
     }
 
@@ -125,7 +125,7 @@ async function sendZaloNotification(workshopId: string | undefined, data: LeaveN
 
     req.on("error", (e: any) => {
       console.log("Zalo Webhook unreachable (e.g. offline tunnel or invalid URL):", e.message);
-      resolve({ ok: false, error: "Không kết nối được webhook: " + e.message });
+      resolve({ ok: false, error: "Không kết nối được webhook. Mã tra cứu: " + ghiLoi(e, "webhook") });
     });
 
     req.on("timeout", () => {
@@ -136,6 +136,21 @@ async function sendZaloNotification(workshopId: string | undefined, data: LeaveN
     req.write(payload);
     req.end();
   });
+}
+
+// Tra loi loi ma khong lo chi tiet noi bo ra trinh duyet (AGENTS.md muc 1.4).
+// Thong diep goc cua PostgreSQL/Node co the chua ten bang, ten cot, dia chi may
+// chu CSDL, ca du lieu that (vd. "Key (name)=(Nguyen Van A) already exists").
+// Chi tiet day du ghi vao log may chu kem mot ma ngan; trinh duyet chi nhan cau
+// chung va ma do — nguoi dung bao lai ma, quan tri tim ma trong log Render.
+function ghiLoi(e: unknown, boiCanh = ""): string {
+  const ma = crypto.randomBytes(4).toString("hex");
+  console.error(`[loi ${ma}]${boiCanh ? " " + boiCanh + ":" : ""}`, e);
+  return ma;
+}
+function traLoiLoi(res: any, e: unknown, loiChung = "Có lỗi hệ thống", status = 500) {
+  const ma = ghiLoi(e, loiChung);
+  return res.status(status).json({ error: `${loiChung}. Mã tra cứu: ${ma}` });
 }
 
 // Lazily created once and reused across requests; nodemailer keeps its own connection pool.
@@ -165,7 +180,7 @@ async function sendEmailNotification(workshopId: string | undefined, data: Leave
     const result = await sqlPool.query(`SELECT config FROM workshops WHERE id = $1`, [workshopId]);
     recipients = String(result.rows[0]?.config?.notifyEmail || "").trim();
   } catch (dbErr: any) {
-    return { ok: false, error: "Không đọc được cấu hình email: " + dbErr.message };
+    return { ok: false, error: "Không đọc được cấu hình email. Mã tra cứu: " + ghiLoi(dbErr, "doc cau hinh email") };
   }
   if (!recipients) {
     return { ok: false, skipped: true, error: "Chưa cấu hình Email nhận thông báo cho phân xưởng này." };
@@ -189,7 +204,7 @@ async function sendEmailNotification(workshopId: string | undefined, data: Leave
     return { ok: true, to: recipients };
   } catch (e: any) {
     console.log("Failed to send email notification:", e.message);
-    return { ok: false, error: "Gửi email thất bại: " + e.message, to: recipients };
+    return { ok: false, error: "Gửi email thất bại. Mã tra cứu: " + ghiLoi(e, "gui email"), to: recipients };
   }
 }
 
@@ -267,7 +282,6 @@ const handleAuthErrorIfAny = async (error: any, res: any) => {
     await clearTokens();
     res.status(401).json({ 
       error: "Liên kết tài khoản Google đã hết hạn hoặc bị hủy. Vui lòng kết nối lại tài khoản của bạn.",
-      details: error.message,
       auth_expired: true
     });
     return true;
@@ -308,7 +322,8 @@ app.get("/api/debug/auth", async (req, res) => {
     database_url_set: !!process.env.DATABASE_URL,
     stored_tokens_exist: !!storedTokens,
     cookie_tokens_exist: !!req.cookies.google_tokens,
-    last_error: lastDbError,
+    // Chi bao co loi hay khong — noi dung loi CSDL nam trong log may chu.
+    last_error: lastDbError ? "có lỗi, xem log máy chủ" : null,
     env_vars: {
       GOOGLE_CLIENT_ID: !!process.env.GOOGLE_CLIENT_ID,
       GOOGLE_CLIENT_SECRET: !!process.env.GOOGLE_CLIENT_SECRET,
@@ -329,7 +344,7 @@ app.get("/api/debug/test-db", async (req, res) => {
     );
     res.json({ success: true, message: "Ghi dữ liệu thành công vào Supabase!", counts: counts.rows[0] });
   } catch (e: any) {
-    res.status(500).json({ success: false, error: e.message });
+    res.status(500).json({ success: false, error: "Kiểm tra kết nối cơ sở dữ liệu thất bại. Mã tra cứu: " + ghiLoi(e, "test DB") });
   }
 });
 
@@ -654,7 +669,7 @@ app.get("/api/leave/plan", async (req, res) => {
     res.json({ success: true, ...plan });
   } catch (error: any) {
     console.error("Error planning leave request:", error);
-    res.status(500).json({ error: "Không thể tính ngày phép", details: error.message });
+    traLoiLoi(res, error, "Không thể tính ngày phép");
   }
 });
 
@@ -677,7 +692,7 @@ app.get("/api/leave/employees", async (req, res) => {
     })));
   } catch (error: any) {
     console.error("Error fetching employees:", error);
-    res.status(500).json({ error: "Không thể tải danh sách nhân viên", details: error.message });
+    traLoiLoi(res, error, "Không thể tải danh sách nhân viên");
   }
 });
 
@@ -775,7 +790,7 @@ app.post("/api/leave/employees/import", express.json({ limit: "5mb" }), async (r
   } catch (error: any) {
     await client.query("ROLLBACK").catch(() => {});
     console.error("Error importing employees:", error);
-    res.status(500).json({ error: "Nhập dữ liệu thất bại", details: error.message });
+    traLoiLoi(res, error, "Nhập dữ liệu thất bại");
   } finally {
     client.release();
   }
@@ -794,7 +809,7 @@ app.post("/api/leave/employees/delete", async (req, res) => {
     res.json({ success: true, deletedCount: result.rowCount });
   } catch (error: any) {
     console.error("Error deleting employee:", error);
-    res.status(500).json({ error: "Xóa thất bại", details: error.message });
+    traLoiLoi(res, error, "Xóa thất bại");
   }
 });
 
@@ -875,7 +890,7 @@ app.get("/api/leave/balances", async (req, res) => {
     res.json(out);
   } catch (error: any) {
     console.error("Error fetching leave balances:", error);
-    res.status(500).json({ error: "Không thể tải bảng phép năm", details: error.message });
+    traLoiLoi(res, error, "Không thể tải bảng phép năm");
   }
 });
 
@@ -897,7 +912,7 @@ app.post("/api/leave/balances", async (req, res) => {
     res.json({ success: true, message: `✅ Đã lưu ${toNum(entitled)} ngày phép năm ${year} cho đồng chí ${name}.` });
   } catch (error: any) {
     console.error("Error saving leave balance:", error);
-    res.status(500).json({ error: "Lưu phép năm thất bại", details: error.message });
+    traLoiLoi(res, error, "Lưu phép năm thất bại");
   }
 });
 
@@ -947,7 +962,7 @@ app.post("/api/leave/balances/used", async (req, res) => {
     });
   } catch (error: any) {
     console.error("Error saving used days:", error);
-    res.status(500).json({ error: "Lưu số ngày đã nghỉ thất bại", details: error.message });
+    traLoiLoi(res, error, "Lưu số ngày đã nghỉ thất bại");
   }
 });
 
@@ -969,7 +984,7 @@ app.post("/api/leave/balances/delete", async (req, res) => {
     res.json({ success: true, deletedCount: result.rowCount });
   } catch (error: any) {
     console.error("Error deleting leave balance:", error);
-    res.status(500).json({ error: "Xóa thất bại", details: error.message });
+    traLoiLoi(res, error, "Xóa thất bại");
   }
 });
 
@@ -979,7 +994,7 @@ app.get("/api/leave/locations", async (req, res) => {
     res.json(result.rows.map((r: any) => ({ name: r.name, distanceKm: Number(r.distance_km) })));
   } catch (error: any) {
     console.error("Error fetching location distances:", error);
-    res.status(500).json({ error: "Không thể tải bảng khoảng cách", details: error.message });
+    traLoiLoi(res, error, "Không thể tải bảng khoảng cách");
   }
 });
 
@@ -997,7 +1012,7 @@ app.get("/api/leave/travel-days", async (req, res) => {
     res.json({ success: true, ...result });
   } catch (error: any) {
     console.error("Error resolving travel days:", error);
-    res.status(500).json({ error: "Không thể tính ngày đi đường", details: error.message });
+    traLoiLoi(res, error, "Không thể tính ngày đi đường");
   }
 });
 
@@ -1012,7 +1027,7 @@ app.get("/api/signatures", async (req, res) => {
     res.json(signatures);
   } catch (e: any) {
     console.error("Error fetching signatures:", e);
-    res.status(500).json({ error: e.message });
+    traLoiLoi(res, e);
   }
 });
 
@@ -1038,7 +1053,7 @@ app.post("/api/signatures", express.json({ limit: '10mb' }), async (req, res) =>
     res.json({ success: true });
   } catch (e: any) {
     console.error("Error saving signature:", e);
-    res.status(500).json({ error: e.message });
+    traLoiLoi(res, e);
   }
 });
 
@@ -1070,7 +1085,7 @@ app.post("/api/signatures/batch", express.json({ limit: '50mb' }), async (req, r
   } catch (e: any) {
     await client.query("ROLLBACK").catch(() => {});
     console.error("Error saving signatures batch:", e);
-    res.status(500).json({ error: e.message });
+    traLoiLoi(res, e);
   } finally {
     client.release();
   }
@@ -1204,7 +1219,7 @@ app.get("/api/sso/login", async (req: any, res) => {
     res.redirect("/");
   } catch (e: any) {
     console.error("SSO login that bai:", e);
-    res.status(500).send("Loi he thong: " + e.message);
+    res.status(500).send("Lỗi hệ thống. Mã tra cứu: " + ghiLoi(e, "SSO login"));
   }
 });
 
@@ -1347,7 +1362,7 @@ app.get("/api/audit-log", async (req: any, res) => {
     );
     res.json(r.rows);
   } catch (e: any) {
-    res.status(500).json({ error: e.message });
+    traLoiLoi(res, e);
   }
 });
 
@@ -1355,7 +1370,7 @@ app.get("/api/setup/status", async (_req, res) => {
   try {
     res.json({ needsBootstrap: await needsBootstrap() });
   } catch (e: any) {
-    res.status(500).json({ error: e.message });
+    traLoiLoi(res, e);
   }
 });
 
@@ -1365,7 +1380,7 @@ app.get("/api/auth/me", async (req: any, res) => {
     if (!user) return res.status(401).json({ error: "Chưa đăng nhập." });
     res.json({ user: toUserAccount(user) });
   } catch (e: any) {
-    res.status(500).json({ error: e.message });
+    traLoiLoi(res, e);
   }
 });
 
@@ -1432,7 +1447,7 @@ app.post("/api/auth/register", async (req, res) => {
   } catch (e: any) {
     await client.query("ROLLBACK").catch(() => {});
     console.error("Error registering:", e);
-    res.status(500).json({ error: e.message });
+    traLoiLoi(res, e);
   } finally {
     client.release();
   }
@@ -1563,7 +1578,7 @@ app.post("/api/auth/login", async (req, res) => {
     res.json({ success: true, user: toUserAccount(acc) });
   } catch (e: any) {
     console.error("Error logging in:", e);
-    res.status(500).json({ error: e.message });
+    traLoiLoi(res, e);
   }
 });
 
@@ -1581,7 +1596,7 @@ app.get("/api/workshops", async (req: any, res) => {
     res.json(result.rows.map(toWorkshop));
   } catch (e: any) {
     console.error("Error fetching workshops:", e);
-    res.status(500).json({ error: e.message });
+    traLoiLoi(res, e);
   }
 });
 
@@ -1628,7 +1643,7 @@ app.post("/api/workshops", express.json({ limit: "5mb" }), async (req: any, res)
     res.json({ success: true, workshop: toWorkshop(result.rows[0]) });
   } catch (e: any) {
     console.error("Error saving workshop:", e);
-    res.status(500).json({ error: e.message });
+    traLoiLoi(res, e);
   }
 });
 
@@ -1642,7 +1657,7 @@ app.delete("/api/workshops/:id", async (req: any, res) => {
     res.json({ success: true });
   } catch (e: any) {
     console.error("Error deleting workshop:", e);
-    res.status(500).json({ error: e.message });
+    traLoiLoi(res, e);
   }
 });
 
@@ -1671,7 +1686,7 @@ app.get("/api/accounts", async (req: any, res) => {
     res.json(result.rows.map(toUserAccount));
   } catch (e: any) {
     console.error("Error fetching accounts:", e);
-    res.status(500).json({ error: e.message });
+    traLoiLoi(res, e);
   }
 });
 
@@ -1757,7 +1772,7 @@ app.post("/api/accounts", async (req: any, res) => {
     res.json({ success: true, account: toUserAccount(result.rows[0]) });
   } catch (e: any) {
     console.error("Error saving account:", e);
-    res.status(500).json({ error: e.message });
+    traLoiLoi(res, e);
   }
 });
 
@@ -1776,7 +1791,7 @@ app.delete("/api/accounts/:id", async (req: any, res) => {
     res.json({ success: true });
   } catch (e: any) {
     console.error("Error deleting account:", e);
-    res.status(500).json({ error: e.message });
+    traLoiLoi(res, e);
   }
 });
 
@@ -1842,7 +1857,7 @@ app.get("/api/app-settings", async (req, res) => {
     res.json(data);
   } catch (e: any) {
     console.error("Error fetching app settings:", e);
-    res.status(500).json({ error: e.message });
+    traLoiLoi(res, e);
   }
 });
 
@@ -1861,7 +1876,7 @@ app.post("/api/app-settings", express.json({ limit: '5mb' }), async (req, res) =
     res.json({ success: true });
   } catch (e: any) {
     console.error("Error saving app settings:", e);
-    res.status(500).json({ error: e.message });
+    traLoiLoi(res, e);
   }
 });
 
@@ -1897,10 +1912,7 @@ app.get("/api/auth/google", (req, res) => {
     res.redirect(url);
   } catch (error) {
     console.error("Error generating Auth URL:", error);
-    res.status(500).json({ 
-      error: "Failed to generate Google Auth URL", 
-      details: error instanceof Error ? error.message : String(error) 
-    });
+    traLoiLoi(res, error, "Failed to generate Google Auth URL");
   }
 });
 
@@ -2022,7 +2034,7 @@ app.get("/api/sheets/leave-requests", async (req, res) => {
     res.json(leaveRequests);
   } catch (error: any) {
     console.error("Error fetching leave requests from SQL:", error);
-    res.status(500).json({ error: "Failed to fetch leave requests", details: error.message });
+    traLoiLoi(res, error, "Failed to fetch leave requests");
   }
 });
 
@@ -2144,7 +2156,7 @@ app.post("/api/sheets/leave-requests", async (req, res) => {
   } catch (error: any) {
     await client.query("ROLLBACK").catch(() => {});
     console.error("Error saving leave request to SQL:", error);
-    res.status(500).json({ error: "Lưu đơn thất bại", details: error.message });
+    traLoiLoi(res, error, "Lưu đơn thất bại");
   } finally {
     client.release();
   }
@@ -2179,7 +2191,7 @@ app.get("/api/sheets/leave-balance", async (req, res) => {
     });
   } catch (error: any) {
     console.error("Error fetching leave balance from SQL:", error);
-    return res.status(500).json({ error: "Lỗi truy vấn dữ liệu", details: error.message });
+    return traLoiLoi(res, error, "Lỗi truy vấn dữ liệu");
   }
 });
 
@@ -2322,7 +2334,7 @@ app.post("/api/leave/trace", async (req: any, res) => {
   } catch (error: any) {
     await client.query("ROLLBACK").catch(() => {});
     console.error("Ghi vet lich su nghi phep that bai:", error);
-    res.status(500).json({ error: "Không ghi được vào lịch sử nghỉ phép", details: error.message });
+    traLoiLoi(res, error, "Không ghi được vào lịch sử nghỉ phép");
   } finally {
     client.release();
   }
@@ -2354,7 +2366,7 @@ app.post("/api/sheets/leave-requests/update-status", async (req, res) => {
     res.json({ success: true, updatedCount: result.rowCount, updatedRows: result.rows });
   } catch (error: any) {
     console.error("Error updating leave status in SQL:", error);
-    res.status(500).json({ error: "Failed to update leave status", details: error.message });
+    traLoiLoi(res, error, "Failed to update leave status");
   }
 });
 
@@ -2381,7 +2393,7 @@ app.post("/api/sheets/leave-requests/delete", async (req, res) => {
     res.json({ success: true, deletedCount: result.rowCount });
   } catch (error: any) {
     console.error("Error deleting leave request from SQL:", error);
-    res.status(500).json({ error: "Failed to delete leave request", details: error.message });
+    traLoiLoi(res, error, "Failed to delete leave request");
   }
 });
 
@@ -2420,7 +2432,7 @@ async function syncComCa(updates: any[], workshopId: string | null, nguon = "lic
     return kq;
   } catch (e: any) {
     console.error("Không gọi được app cơm ca:", e.message);
-    return { ok: false, error: e.message };
+    return { ok: false, error: "Không gọi được app cơm ca. Mã tra cứu: " + ghiLoi(e, "dong bo com ca") };
   }
 }
 
@@ -2537,7 +2549,7 @@ app.get("/api/comca/doi-ca/history", async (req: any, res) => {
     );
     res.json({ ok: true, rows: rows.rows });
   } catch (e: any) {
-    res.json({ ok: false, error: e.message });
+    res.json({ ok: false, error: "Có lỗi hệ thống. Mã tra cứu: " + ghiLoi(e, "nhat ky doi ca") });
   }
 });
 
@@ -2557,7 +2569,7 @@ app.delete("/api/comca/doi-ca/history", async (req: any, res) => {
     );
     res.json({ ok: true, deleted: r.rowCount });
   } catch (e: any) {
-    res.json({ ok: false, error: e.message });
+    res.json({ ok: false, error: "Có lỗi hệ thống. Mã tra cứu: " + ghiLoi(e, "nhat ky doi ca") });
   }
 });
 
@@ -2818,16 +2830,11 @@ app.post("/api/sheets/update", async (req, res) => {
       res.clearCookie("google_tokens");
       await clearTokens();
       return res.status(401).json({ 
-        error: "Google Authentication expired or has insufficient permissions. Please log in again.",
-        details: error.message 
+        error: "Google Authentication expired or has insufficient permissions. Please log in again."
       });
     }
 
-    res.status(500).json({ 
-      error: "Failed to update sheet", 
-      details: error.message,
-      code: error.code
-    });
+    traLoiLoi(res, error, "Failed to update sheet");
   }
 });
 
@@ -2931,11 +2938,7 @@ app.post("/api/sheets/update-annual-leaves", async (req, res) => {
     res.json({ success: true, updatedNames, skippedNames });
   } catch (error: any) {
     console.error("Lỗi cập nhật bảng theo dõi phép năm:", error);
-    res.status(500).json({ 
-      error: "Không thể cập nhật bảng theo dõi phép năm", 
-      details: error.message,
-      code: error.code
-    });
+    traLoiLoi(res, error, "Không thể cập nhật bảng theo dõi phép năm");
   }
 });
 

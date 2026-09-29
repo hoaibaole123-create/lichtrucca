@@ -832,7 +832,7 @@ export function buildSwapDocXml(swapData: any, config: any, rIds: any = {}) {
   const df2 = fmtVN(d2);
 
   let timeStr = '';
-  let contentLines = [];
+  const contentLines = [];
 
   if (shift1 !== 'None' && shift2 !== 'None') {
     if (date1 === date2) {

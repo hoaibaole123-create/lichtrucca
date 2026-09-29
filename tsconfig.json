@@ -21,6 +21,21 @@
       ]
     },
     "allowImportingTsExtensions": true,
-    "noEmit": true
+    "noEmit": true,
+
+    // ── Kiểm tra kiểu nghiêm ngặt (bật dần, không bật `strict` một phát) ──
+    // 5 cờ dưới đây bật mà không sinh lỗi nào trên mã hiện tại.
+    "noImplicitThis": true,
+    "alwaysStrict": true,
+    "strictBindCallApply": true,
+    "strictFunctionTypes": true,
+    "useUnknownInCatchVariables": true
+
+    // CÒN LẠI (chưa bật — cần chiến dịch sửa riêng, đừng bật kèm khi vá lỗi khác):
+    //   "strictNullChecks": true   -> 36 lỗi. Từng chỗ có thể là bug null thật,
+    //                                 phải soi tay, không sửa hàng loạt.
+    //   "noImplicitAny": true      -> ~2600 lỗi, gần hết là JSX/tham số. Cần
+    //                                 gắn kiểu dần theo từng file component.
+    // Khi cả hai về 0, thay toàn bộ khối này bằng "strict": true.
   }
 }

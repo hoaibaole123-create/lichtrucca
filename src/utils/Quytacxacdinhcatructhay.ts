@@ -64,7 +64,7 @@ export function buildMultiLeaveResults(
   danhSachLichNghi.forEach((dongnghict, indexnghi) => { 
     bangtraKIpnghi[dongnghict.kip] = indexnghi; 
     let dem = 0;
-    let ngaychao = new Date(dongnghict.start);
+    const ngaychao = new Date(dongnghict.start);
     while (ngaychao <= dongnghict.end) {
       const cahientai = fnXacDinhCa(ngaychao, dongnghict.kip);
       if (cahientai !== 'O') dem++;
@@ -84,7 +84,7 @@ export function buildMultiLeaveResults(
 
   const tatcangaynghi: Record<string, Date> = {};
   danhSachLichNghi.forEach(dongnghi => {
-    let ngaychao = new Date(dongnghi.start);
+    const ngaychao = new Date(dongnghi.start);
     while (ngaychao <= dongnghi.end) {
       tatcangaynghi[fmtIn(ngaychao)] = new Date(ngaychao);
       ngaychao.setDate(ngaychao.getDate() + 1);
@@ -552,7 +552,7 @@ else {
             if (lakipnghigoc) {
               // Covering a leave - Good, but prefer rule-based person
               diemso += 1000;
-              let kiptheoquytac = (kipgoc && activeRules[kipgoc] && activeRules[kipgoc][s]) ? activeRules[kipgoc][s].k : null;
+              const kiptheoquytac = (kipgoc && activeRules[kipgoc] && activeRules[kipgoc][s]) ? activeRules[kipgoc][s].k : null;
               
               if (kiptheoquytac === k) diemso -= 500;
             } else {

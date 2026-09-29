@@ -1,0 +1,6 @@
+dist
+node_modules
+public
+*.md
+video
+package-lock.json

@@ -588,6 +588,12 @@ export default function WorkshopManagerModal({
         }
       }
 
+      // Server co the tra success nhung thieu truong workshop; chan lai o day
+      // truoc khi dung targetWs.id/.name ben duoi, thay vi de no no giua chung.
+      if (!targetWs) {
+        throw new Error('Không nhận được thông tin phân xưởng từ máy chủ.');
+      }
+
       // Step 2: Create Admin Account
       const accRes = await fetch(API_BASE + '/api/accounts', {
         method: 'POST',

@@ -29,13 +29,13 @@
     "alwaysStrict": true,
     "strictBindCallApply": true,
     "strictFunctionTypes": true,
-    "useUnknownInCatchVariables": true
+    "useUnknownInCatchVariables": true,
+    "strictNullChecks": true
 
     // CÒN LẠI (chưa bật — cần chiến dịch sửa riêng, đừng bật kèm khi vá lỗi khác):
-    //   "strictNullChecks": true   -> 36 lỗi. Từng chỗ có thể là bug null thật,
-    //                                 phải soi tay, không sửa hàng loạt.
     //   "noImplicitAny": true      -> ~2600 lỗi, gần hết là JSX/tham số. Cần
-    //                                 gắn kiểu dần theo từng file component.
-    // Khi cả hai về 0, thay toàn bộ khối này bằng "strict": true.
+    //                                 thêm @types/react rồi gắn kiểu dần theo
+    //                                 từng file component.
+    // Khi noImplicitAny về 0, thay toàn bộ khối này bằng "strict": true.
   }
 }

@@ -288,7 +288,7 @@ export function buildDocXml(currentResult: any, config: any) {
   const colW = [c0, c1]; for (let k = 0; k < nCols; k++) colW.push(caW);
   const tot = colW.reduce((a, b) => a + b, 0); colW[colW.length - 1] += (CW - tot);
 
-  const tableRows = [];
+  const tableRows: string[] = [];
   tableRows.push(wtr([
     wtc({ w: c0, shading: GRAY, content: wpara(wrun('Tên người cần được\ntrực thay', { bold: true, size: 24 }), { align: 'center' }) }),
     wtc({ w: c1, shading: GRAY, content: wpara(wrun('Chức danh\nhiện tại', { bold: true, size: 24 }), { align: 'center' }) }),
@@ -316,7 +316,7 @@ export function buildDocXml(currentResult: any, config: any) {
     });
 
     const rows = buildPersonRows(res);
-    let groups = [];
+    let groups: any[][] = [];
     for (let i = 0; i < rows.length; i += nCols) groups.push(rows.slice(i, i + nCols));
     if (!groups.length) groups = [[]];
 
@@ -325,7 +325,7 @@ export function buildDocXml(currentResult: any, config: any) {
     groups.forEach((grp, gi) => {
       const isFirst = (gi === 0);
       const isLast = (gi === groups.length - 1);
-      const caRow = [];
+      const caRow: string[] = [];
       if (isFirst) {
         caRow.push(wtc({
           w: c0, vMerge: 'restart',
@@ -832,7 +832,7 @@ export function buildSwapDocXml(swapData: any, config: any, rIds: any = {}) {
   const df2 = fmtVN(d2);
 
   let timeStr = '';
-  const contentLines = [];
+  const contentLines: string[] = [];
 
   if (shift1 !== 'None' && shift2 !== 'None') {
     if (date1 === date2) {

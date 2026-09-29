@@ -108,7 +108,7 @@ export default function LeaveBalanceManager({ staffList, onAlert, workshopId }: 
         throw new Error('Không tìm thấy cột "Họ và tên" hoặc "Ngày vào làm việc".');
       }
 
-      const parsed = [];
+      const parsed: { name: string; hireYear: number; baseDays: number; used: number | undefined }[] = [];
       for (let i = 1; i < table.length; i++) {
         const row = table[i] || [];
         const name = String(row[nameCol] ?? '').trim();

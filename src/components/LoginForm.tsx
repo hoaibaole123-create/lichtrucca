@@ -19,7 +19,7 @@ export default function LoginForm({ onLoginSuccess, isEmbedded = false }: LoginF
   // Modal State for Quick Admin Creation & Setup
   const [showCreateAdminModal, setShowCreateAdminModal] = useState(false);
   const [newAdminUsername, setNewAdminUsername] = useState('');
-  const [newAdminPassword, setNewAdminPassword] = useState('123456');
+  const [newAdminPassword, setNewAdminPassword] = useState('');
   const [newWsName, setNewWsName] = useState('');
   const [newWsCode, setNewWsCode] = useState('');
   const [newNotifyEmail, setNewNotifyEmail] = useState('');
@@ -53,6 +53,12 @@ export default function LoginForm({ onLoginSuccess, isEmbedded = false }: LoginF
     e.preventDefault();
     if (!newAdminUsername.trim()) {
       setModalMsg({ type: 'error', text: 'Vui lòng nhập Tên đăng nhập.' });
+      return;
+    }
+    // Khong con mat khau mac dinh: truoc day bo trong o nay van tao duoc tai
+    // khoan voi mat khau "123456", ai biet quy tac cung dang nhap duoc.
+    if (!newAdminPassword.trim()) {
+      setModalMsg({ type: 'error', text: 'Vui lòng nhập Mật khẩu.' });
       return;
     }
 
@@ -92,7 +98,7 @@ export default function LoginForm({ onLoginSuccess, isEmbedded = false }: LoginF
       localStorage.setItem('auth_user', JSON.stringify(loginData.user));
       localStorage.setItem('remembered_login', JSON.stringify({
         username: newAdminUsername.trim(),
-        password: newAdminPassword.trim() || '123456',
+        password: newAdminPassword.trim(),
         rememberMe: true
       }));
 
@@ -328,13 +334,13 @@ export default function LoginForm({ onLoginSuccess, isEmbedded = false }: LoginF
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="block font-semibold text-slate-700 mb-1">
-                      Mật khẩu * <span className="text-slate-400 font-normal">(mặc định: 123456)</span>
+                      Mật khẩu *
                     </label>
                     <input
                       type="text"
                       value={newAdminPassword}
                       onChange={(e) => setNewAdminPassword(e.target.value)}
-                      placeholder="123456"
+                      placeholder="Nhập mật khẩu"
                       className="w-full px-3.5 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-mono font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#00529c]/20"
                       required
                     />

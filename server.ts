@@ -1740,8 +1740,15 @@ app.post("/api/accounts", async (req: any, res) => {
     const dup = await sqlPool.query(`SELECT id FROM user_accounts WHERE lower(username) = lower(trim($1))`, [username]);
     if (dup.rows.length > 0) return res.status(400).json({ error: "Tên đăng nhập đã tồn tại." });
 
+    // Tao moi thi BAT BUOC co mat khau. Truoc day thieu mat khau se lang le
+    // dat thanh "123456" — ai biet quy tac do la dang nhap duoc vao bat ky tai
+    // khoan nao vua tao. Duong SUA o tren van cho de trong, vi o do de trong
+    // mang nghia "giu nguyen mat khau cu", khong phai "dat mat khau yeu".
+    if (!password || !String(password).trim()) {
+      return res.status(400).json({ error: "Thiếu mật khẩu cho tài khoản mới." });
+    }
     const newId = "user_" + Date.now() + "_" + Math.floor(Math.random() * 1000);
-    const passwordHash = hashPassword(password || "123456");
+    const passwordHash = hashPassword(String(password));
     const result = await sqlPool.query(
       `INSERT INTO user_accounts (id, username, password_hash, full_name, role, workshop_id)
        VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,

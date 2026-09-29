@@ -56,7 +56,7 @@ export default function WorkshopManagerModal({
 
   // Create Admin Account & Initial Setup State
   const [createAdminUsername, setCreateAdminUsername] = useState('');
-  const [createAdminPassword, setCreateAdminPassword] = useState('123456');
+  const [createAdminPassword, setCreateAdminPassword] = useState('');
   const [createAdminFullName, setCreateAdminFullName] = useState('');
   const [createAdminWsOption, setCreateAdminWsOption] = useState<'new' | 'existing'>('new');
   const [createAdminWsName, setCreateAdminWsName] = useState('');
@@ -467,7 +467,7 @@ export default function WorkshopManagerModal({
 
   // New Account Form State
   const [newUsername, setNewUsername] = useState('');
-  const [newPassword, setNewPassword] = useState('123456');
+  const [newPassword, setNewPassword] = useState('');
   const [newFullName, setNewFullName] = useState('');
   const [newRole, setNewRole] = useState<'super_admin' | 'workshop_admin' | 'workshop_user'>('workshop_user');
   const [newWsId, setNewWsId] = useState(isSuperAdmin ? (activeWorkshop?.id || workshops[0]?.id || '') : userWorkshopId);
@@ -536,6 +536,12 @@ export default function WorkshopManagerModal({
       setMsg({ type: 'error', text: 'Vui lòng nhập Tên đăng nhập và Họ tên Quản trị viên.' });
       return;
     }
+    // Khong con mat khau mac dinh: bo trong truoc day van tao duoc tai khoan
+    // voi mat khau "123456", ai biet quy tac cung dang nhap duoc.
+    if (!createAdminPassword.trim()) {
+      setMsg({ type: 'error', text: 'Vui lòng nhập Mật khẩu cho tài khoản Quản trị viên.' });
+      return;
+    }
 
     let targetWs: Workshop | null = null;
     setIsCreatingAdminAndSetup(true);
@@ -588,7 +594,7 @@ export default function WorkshopManagerModal({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           username: createAdminUsername.trim(),
-          password: createAdminPassword.trim() || '123456',
+          password: createAdminPassword.trim(),
           fullName: createAdminFullName.trim(),
           role: 'workshop_admin',
           workshopId: targetWs.id
@@ -614,7 +620,7 @@ export default function WorkshopManagerModal({
 
       // Clear fields
       setCreateAdminUsername('');
-      setCreateAdminPassword('123456');
+      setCreateAdminPassword('');
       setCreateAdminFullName('');
       setCreateAdminWsName('');
       setCreateAdminWsCode('');
@@ -875,6 +881,10 @@ export default function WorkshopManagerModal({
       setMsg({ type: 'error', text: 'Vui lòng nhập tên đăng nhập, họ tên và chọn phân xưởng.' });
       return;
     }
+    if (!newPassword.trim()) {
+      setMsg({ type: 'error', text: 'Vui lòng nhập Mật khẩu.' });
+      return;
+    }
 
     setIsCreatingAccount(true);
     setMsg(null);
@@ -885,7 +895,7 @@ export default function WorkshopManagerModal({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           username: newUsername.trim(),
-          password: newPassword.trim() || '123456',
+          password: newPassword.trim(),
           fullName: newFullName.trim(),
           role: newRole,
           workshopId: targetWsId
@@ -900,7 +910,7 @@ export default function WorkshopManagerModal({
       setMsg({ type: 'success', text: `✅ Đã tạo tài khoản "${newUsername}" cho phân xưởng thành công!` });
       setNewUsername('');
       setNewFullName('');
-      setNewPassword('123456');
+      setNewPassword('');
       fetchAccounts();
     } catch (err: any) {
       setMsg({ type: 'error', text: err.message || 'Lỗi tạo tài khoản.' });
@@ -1235,7 +1245,7 @@ export default function WorkshopManagerModal({
                       type="text"
                       value={newPassword}
                       onChange={(e) => setNewPassword(e.target.value)}
-                      placeholder="Mặc định: 123456"
+                      placeholder="Nhập mật khẩu"
                       className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-sky-600/20 font-mono"
                     />
                   </div>
@@ -1618,13 +1628,13 @@ export default function WorkshopManagerModal({
 
                     <div>
                       <label className="block font-semibold text-slate-700 mb-1">
-                        Mật khẩu * <span className="text-slate-400 font-normal">(mặc định: 123456)</span>
+                        Mật khẩu *
                       </label>
                       <input
                         type="text"
                         value={createAdminPassword}
                         onChange={(e) => setCreateAdminPassword(e.target.value)}
-                        placeholder="123456"
+                        placeholder="Nhập mật khẩu"
                         className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-mono font-medium focus:outline-none focus:ring-2 focus:ring-sky-600/20"
                         required
                       />

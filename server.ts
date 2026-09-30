@@ -2427,7 +2427,10 @@ async function syncComCa(updates: any[], workshopId: string | null, nguon = "lic
           (kq.skipped?.length ? `, bỏ qua ${kq.skipped.length}: ${kq.skipped.join("; ")}` : "")
       );
     } else {
-      console.error("Đồng bộ cơm ca thất bại:", kq?.error);
+      // Loi cua app com ca la chi tiet noi bo cua he thong KHAC — ghi log, chi
+      // tra ma tra cuu, khong chuyen nguyen van ve trinh duyet.
+      const ma = ghiLoi(kq?.error ?? `HTTP ${resp.status}`, "app com ca tu choi");
+      return { ok: false, error: "App cơm ca báo lỗi. Mã tra cứu: " + ma };
     }
     return kq;
   } catch (e: any) {

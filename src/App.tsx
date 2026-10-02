@@ -238,7 +238,7 @@ export default function App() {
   };
 
   // Form doi mat khau o tab Tai khoan (moi vai tro).
-  const DOI_MK_TRONG = { cu: '', moi: '', nhapLai: '', loi: '', xong: '', dangGui: false };
+  const DOI_MK_TRONG = { mo: false, cu: '', moi: '', nhapLai: '', loi: '', xong: '', dangGui: false };
   const [doiMk, setDoiMk] = useState(DOI_MK_TRONG);
 
   const handleLogout = () => {
@@ -2205,14 +2205,27 @@ export default function App() {
                       body: JSON.stringify({ currentPassword: doiMk.cu, newPassword: doiMk.moi })
                     });
                     const d = await r.json().catch(() => ({}));
-                    if (r.ok) setDoiMk({ cu: '', moi: '', nhapLai: '', loi: '', xong: '✅ Đã đổi mật khẩu. Các thiết bị khác đã bị đăng xuất.', dangGui: false });
+                    if (r.ok) setDoiMk({ ...DOI_MK_TRONG, xong: '✅ Đã đổi mật khẩu. Các thiết bị khác đã bị đăng xuất.' });
                     else setDoiMk(s => ({ ...s, loi: d.error || 'Không đổi được mật khẩu.', dangGui: false }));
                   } catch {
                     setDoiMk(s => ({ ...s, loi: 'Không kết nối được máy chủ.', dangGui: false }));
                   }
                 }}
               >
-                <label className="block text-xs font-bold text-slate-600 uppercase tracking-wider">Đổi mật khẩu</label>
+                <div className="flex items-center justify-between gap-3">
+                  <label className="block text-xs font-bold text-slate-600 uppercase tracking-wider">Mật khẩu</label>
+                  {!doiMk.mo && (
+                    <button
+                      type="button"
+                      onClick={() => setDoiMk({ ...DOI_MK_TRONG, mo: true })}
+                      className="px-4 py-2 bg-sky-700 hover:bg-sky-800 text-white rounded-xl text-xs font-bold cursor-pointer"
+                    >
+                      Đổi mật khẩu
+                    </button>
+                  )}
+                </div>
+                {!doiMk.mo && doiMk.xong && <p className="text-xs font-semibold text-emerald-700">{doiMk.xong}</p>}
+                {doiMk.mo && <>
                 {([['cu', 'Mật khẩu hiện tại', 'current-password'], ['moi', 'Mật khẩu mới (ít nhất 6 ký tự)', 'new-password'], ['nhapLai', 'Nhập lại mật khẩu mới', 'new-password']] as const).map(([k, nhan, ac]) => (
                   <input
                     key={k}
@@ -2226,14 +2239,24 @@ export default function App() {
                   />
                 ))}
                 {doiMk.loi && <p className="text-xs font-semibold text-rose-600">{doiMk.loi}</p>}
-                {doiMk.xong && <p className="text-xs font-semibold text-emerald-700">{doiMk.xong}</p>}
-                <button
-                  type="submit"
-                  disabled={doiMk.dangGui}
-                  className="px-4 py-2 bg-sky-700 hover:bg-sky-800 disabled:opacity-60 text-white rounded-xl text-xs font-bold cursor-pointer"
-                >
-                  {doiMk.dangGui ? 'Đang đổi…' : 'Đổi mật khẩu'}
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    type="submit"
+                    disabled={doiMk.dangGui}
+                    className="px-4 py-2 bg-sky-700 hover:bg-sky-800 disabled:opacity-60 text-white rounded-xl text-xs font-bold cursor-pointer"
+                  >
+                    {doiMk.dangGui ? 'Đang lưu…' : 'Lưu mật khẩu mới'}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={doiMk.dangGui}
+                    onClick={() => setDoiMk(DOI_MK_TRONG)}
+                    className="px-4 py-2 bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 rounded-xl text-xs font-bold cursor-pointer"
+                  >
+                    Hủy
+                  </button>
+                </div>
+                </>}
               </form>
 
               {isAdmin && (

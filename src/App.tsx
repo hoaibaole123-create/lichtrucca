@@ -11,7 +11,7 @@ import LeaveBalanceManager from './components/LeaveBalanceManager';
 import LoginForm from './components/LoginForm';
 import WorkshopManagerModal from './components/WorkshopManagerModal';
 import { UserAccount, Workshop } from './types/auth';
-import { Trash2, Settings, LogOut, User } from 'lucide-react';
+import { Trash2, Settings, LogOut, User, Eye, EyeOff } from 'lucide-react';
 import { API_BASE } from './utils/api';
 
 export default function App() {
@@ -240,6 +240,9 @@ export default function App() {
   // Form doi mat khau o tab Tai khoan (moi vai tro).
   const DOI_MK_TRONG = { mo: false, cu: '', moi: '', nhapLai: '', loi: '', xong: '', dangGui: false };
   const [doiMk, setDoiMk] = useState(DOI_MK_TRONG);
+  // Bat/tat xem mat khau tung o; dong form hay doi tab thi an lai het.
+  const [hienMk, setHienMk] = useState<Record<string, boolean>>({});
+  useEffect(() => { if (!doiMk.mo) setHienMk({}); }, [doiMk.mo]);
 
   const handleLogout = () => {
     setDoiMk(DOI_MK_TRONG);
@@ -2227,16 +2230,26 @@ export default function App() {
                 {!doiMk.mo && doiMk.xong && <p className="text-xs font-semibold text-emerald-700">{doiMk.xong}</p>}
                 {doiMk.mo && <>
                 {([['cu', 'Mật khẩu hiện tại', 'current-password'], ['moi', 'Mật khẩu mới (ít nhất 6 ký tự)', 'new-password'], ['nhapLai', 'Nhập lại mật khẩu mới', 'new-password']] as const).map(([k, nhan, ac]) => (
-                  <input
-                    key={k}
-                    type="password"
-                    required
-                    autoComplete={ac}
-                    placeholder={nhan}
-                    value={doiMk[k]}
-                    onChange={e => setDoiMk(s => ({ ...s, [k]: e.target.value, loi: '', xong: '' }))}
-                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-sky-600"
-                  />
+                  <div key={k} className="relative">
+                    <input
+                      type={hienMk[k] ? 'text' : 'password'}
+                      required
+                      autoComplete={ac}
+                      placeholder={nhan}
+                      value={doiMk[k]}
+                      onChange={e => setDoiMk(s => ({ ...s, [k]: e.target.value, loi: '', xong: '' }))}
+                      className="w-full pl-3 pr-10 py-2 bg-white border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-sky-600"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setHienMk(s => ({ ...s, [k]: !s[k] }))}
+                      title={hienMk[k] ? 'Ẩn mật khẩu' : 'Xem mật khẩu'}
+                      aria-label={hienMk[k] ? 'Ẩn mật khẩu' : 'Xem mật khẩu'}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-700 cursor-pointer"
+                    >
+                      {hienMk[k] ? <EyeOff size={16} /> : <Eye size={16} />}
+                    </button>
+                  </div>
                 ))}
                 {doiMk.loi && <p className="text-xs font-semibold text-rose-600">{doiMk.loi}</p>}
                 <div className="flex gap-2">

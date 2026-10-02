@@ -412,11 +412,14 @@ export default function App() {
   const approvedLeaves = useMemo(() => {
     const processed = allLeaves.filter(l => l.status !== 'Chờ phân ca');
     const q = approvedSearch.trim().toLowerCase();
+    // Don moi tao nhat len dau. insertedAt la moc that trong CSDL (createdAt chi la
+    // chuoi hien thi); don thieu moc thi xuong cuoi.
+    const moc = (l: any) => (l.insertedAt ? new Date(l.insertedAt).getTime() : 0) || 0;
     return processed.filter(l => {
       const matchesSearch = !q || l.name.toLowerCase().includes(q) || (l.chucDanh || '').toLowerCase().includes(q);
       const matchesYear = approvedYearFilter === 'all' || l.leaveYear === approvedYearFilter;
       return matchesSearch && matchesYear;
-    });
+    }).sort((a, b) => moc(b) - moc(a));
   }, [allLeaves, approvedSearch, approvedYearFilter]);
   const approvedYearOptions = useMemo(() => {
     const years = new Set(allLeaves.filter(l => l.status !== 'Chờ phân ca').map(l => l.leaveYear).filter(Boolean));

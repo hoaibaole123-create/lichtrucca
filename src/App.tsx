@@ -237,7 +237,12 @@ export default function App() {
     setSwapChucDanh(staffData[0]?.[0] || '');
   };
 
+  // Form doi mat khau o tab Tai khoan (moi vai tro).
+  const DOI_MK_TRONG = { cu: '', moi: '', nhapLai: '', loi: '', xong: '', dangGui: false };
+  const [doiMk, setDoiMk] = useState(DOI_MK_TRONG);
+
   const handleLogout = () => {
+    setDoiMk(DOI_MK_TRONG);
     fetch(API_BASE + '/api/auth/logout', { method: 'POST' }).catch(() => {});
     localStorage.removeItem('auth_user');
     setCurrentUser(null);
@@ -522,8 +527,11 @@ export default function App() {
 
   // Save staff list / config back onto the active workshop's row (debounced), instead
   // of the old single global app_config.
+  const coQuyenLuuCauHinh = currentUser?.role === 'super_admin' || currentUser?.role === 'workshop_admin';
   useEffect(() => {
     if (!isSettingsLoaded || !activeWorkshop) return;
+    // Chi quan tri sua duoc nhan su / cau hinh; may chu tu choi luu tu tai khoan nguoi dung.
+    if (!coQuyenLuuCauHinh) return;
     // Never write state that belongs to a different workshop (or to no workshop yet).
     if (hydratedWsId !== activeWorkshop.id) return;
 
@@ -549,7 +557,7 @@ export default function App() {
 
     const timer = setTimeout(saveSettings, 3000);
     return () => clearTimeout(timer);
-  }, [staffData, config, isSettingsLoaded, activeWorkshop, hydratedWsId]);
+  }, [staffData, config, isSettingsLoaded, activeWorkshop, hydratedWsId, coQuyenLuuCauHinh]);
 
   const fetchWaitingLeaves = useCallback(async () => {
     if (!activeWorkshop) return;
@@ -642,6 +650,7 @@ export default function App() {
     if (cu === 'leave') resetLeaveForm();
     if (cu === 'schedule') resetScheduleForm();
     if (cu === 'swap') resetSwapForm();
+    if (cu === 'auth') setDoiMk(DOI_MK_TRONG);
     // fetchSwapHistory nam trong deps de nhat ky tai lai khi doi phan xuong.
     // An toan: luc do activeTab khong doi nen chot `cu === activeTab` o tren
     // da chan phan xoa form roi.
@@ -2181,6 +2190,51 @@ export default function App() {
                   </div>
                 )}
               </div>
+
+              <form
+                className="bg-slate-50 p-4 rounded-xl border border-slate-200/80 space-y-3"
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  setDoiMk(s => ({ ...s, loi: '', xong: '' }));
+                  if (doiMk.moi !== doiMk.nhapLai) { setDoiMk(s => ({ ...s, loi: 'Mật khẩu nhập lại không khớp.' })); return; }
+                  setDoiMk(s => ({ ...s, dangGui: true }));
+                  try {
+                    const r = await fetch(API_BASE + '/api/auth/change-password', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ currentPassword: doiMk.cu, newPassword: doiMk.moi })
+                    });
+                    const d = await r.json().catch(() => ({}));
+                    if (r.ok) setDoiMk({ cu: '', moi: '', nhapLai: '', loi: '', xong: '✅ Đã đổi mật khẩu. Các thiết bị khác đã bị đăng xuất.', dangGui: false });
+                    else setDoiMk(s => ({ ...s, loi: d.error || 'Không đổi được mật khẩu.', dangGui: false }));
+                  } catch {
+                    setDoiMk(s => ({ ...s, loi: 'Không kết nối được máy chủ.', dangGui: false }));
+                  }
+                }}
+              >
+                <label className="block text-xs font-bold text-slate-600 uppercase tracking-wider">Đổi mật khẩu</label>
+                {([['cu', 'Mật khẩu hiện tại', 'current-password'], ['moi', 'Mật khẩu mới (ít nhất 6 ký tự)', 'new-password'], ['nhapLai', 'Nhập lại mật khẩu mới', 'new-password']] as const).map(([k, nhan, ac]) => (
+                  <input
+                    key={k}
+                    type="password"
+                    required
+                    autoComplete={ac}
+                    placeholder={nhan}
+                    value={doiMk[k]}
+                    onChange={e => setDoiMk(s => ({ ...s, [k]: e.target.value, loi: '', xong: '' }))}
+                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-sky-600"
+                  />
+                ))}
+                {doiMk.loi && <p className="text-xs font-semibold text-rose-600">{doiMk.loi}</p>}
+                {doiMk.xong && <p className="text-xs font-semibold text-emerald-700">{doiMk.xong}</p>}
+                <button
+                  type="submit"
+                  disabled={doiMk.dangGui}
+                  className="px-4 py-2 bg-sky-700 hover:bg-sky-800 disabled:opacity-60 text-white rounded-xl text-xs font-bold cursor-pointer"
+                >
+                  {doiMk.dangGui ? 'Đang đổi…' : 'Đổi mật khẩu'}
+                </button>
+              </form>
 
               {isAdmin && (
                 <button

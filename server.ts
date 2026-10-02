@@ -312,6 +312,7 @@ app.use(cookieParser());
 // declared after it. requireAuth itself is a hoisted function declaration.
 app.use(requireAuth);
 app.use(scopeWorkshopId);
+app.use(chiQuanTri);
 app.use(auditLog);
 
 // Debug routes early
@@ -1348,6 +1349,42 @@ function scopeWorkshopId(req: any, res: any, next: any) {
   next();
 }
 
+// Phan quyen theo VAI TRO. scopeWorkshopId chi chan khac PHAN XUONG; trong cung
+// mot phan xuong, tai khoan "user" truoc day goi thang API van lam duoc moi viec
+// cua quan tri (dat lai mat khau admin, sua chu ky, phep nam...) vi giao dien chi
+// AN nut chu may chu khong chan. Danh sach duoi la nhung gi CHI quan tri duoc lam.
+//
+// Khong co req.user = yeu cau da qua requireAuth bang loi khac (duong cong khai,
+// khoa API com ca, hoac khoi tao CSDL rong) — de cac loi do tu xu ly nhu cu.
+const CHI_QUAN_TRI: Array<[string, RegExp]> = [
+  ["*", /^\/api\/accounts(\/|$)/],             // quan ly tai khoan
+  ["*", /^\/api\/audit-log$/],                 // nhat ky thao tac
+  ["*", /^\/api\/debug\//],                    // trang chan doan
+  ["*", /^\/api\/auth\/google/],               // OAuth Google cu
+  ["*", /^\/api\/app-settings$/],              // cau hinh kieu cu
+  ["*", /^\/api\/leave\/employees(\/|$)/],     // danh sach / nhap / xoa nhan vien
+  ["*", /^\/api\/leave\/balances(\/|$)/],      // phep nam toan phan xuong
+  ["*", /^\/api\/sheets\/update(-annual-leaves)?$/], // ghi Google Sheets cu
+  ["*", /^\/api\/comca\/doi-ca\/history$/],    // nhat ky doi ca (xem + xoa)
+  ["POST", /^\/api\/workshops$/],              // luu nhan su + cau hinh phan xuong
+  ["DELETE", /^\/api\/workshops\//],
+  ["POST", /^\/api\/signatures(\/batch)?$/],   // sua chu ky; DOC chu ky van mo de xuat Word
+];
+
+function laQuanTri(req: any): boolean {
+  const r = req.user?.role;
+  return r === "super_admin" || r === "workshop_admin";
+}
+
+function chiQuanTri(req: any, res: any, next: any) {
+  if (!req.user || laQuanTri(req)) return next();
+  const p = req.path, m = req.method;
+  if (CHI_QUAN_TRI.some(([mm, re]) => (mm === "*" || mm === m) && re.test(p))) {
+    return res.status(403).json({ error: "Chức năng này chỉ dành cho quản trị phân xưởng." });
+  }
+  next();
+}
+
 app.get("/api/audit-log", async (req: any, res) => {
   try {
     const limit = Math.min(Number(req.query.limit) || 200, 1000);
@@ -1461,6 +1498,42 @@ app.post("/api/auth/logout", async (req: any, res) => {
   }
   res.clearCookie(SESSION_COOKIE, { path: "/" });
   res.json({ success: true });
+});
+
+// Tu doi mat khau cua CHINH MINH — moi vai tro deu dung duoc (tab Tai khoan).
+// Phai nhap dung mat khau hien tai; nhap sai cung tinh vao bo dem khoa dang nhap
+// de khong bi dung lam loi do mat khau. Doi xong thi dang xuat moi phien khac
+// cua tai khoan nay, chi giu phien dang dung.
+app.post("/api/auth/change-password", async (req: any, res) => {
+  if (!req.user) return res.status(401).json({ error: "Vui lòng đăng nhập." });
+  const { currentPassword, newPassword } = req.body || {};
+  if (!currentPassword || !newPassword) {
+    return res.status(400).json({ error: "Nhập đủ mật khẩu hiện tại và mật khẩu mới." });
+  }
+  const moi = String(newPassword);
+  if (moi.length < 6) return res.status(400).json({ error: "Mật khẩu mới phải có ít nhất 6 ký tự." });
+  if (moi === String(currentPassword)) return res.status(400).json({ error: "Mật khẩu mới phải khác mật khẩu hiện tại." });
+
+  const key = loginKey(req, req.user.username);
+  const conKhoa = loginLockRemaining(key);
+  if (conKhoa > 0) {
+    return res.status(429).json({ error: `Nhập sai quá nhiều lần. Thử lại sau ${Math.ceil(conKhoa / 60)} phút.` });
+  }
+  try {
+    const r = await sqlPool.query(`SELECT password_hash FROM user_accounts WHERE id = $1`, [req.user.id]);
+    if (!r.rows[0] || !verifyPassword(String(currentPassword), r.rows[0].password_hash)) {
+      recordLoginFailure(key);
+      return res.status(400).json({ error: "Mật khẩu hiện tại không đúng." });
+    }
+    await sqlPool.query(`UPDATE user_accounts SET password_hash = $1, updated_at = now() WHERE id = $2`,
+      [hashPassword(moi), req.user.id]);
+    const phienNay = req.cookies?.[SESSION_COOKIE];
+    await sqlPool.query(`DELETE FROM user_sessions WHERE user_id = $1 AND token_hash <> $2`,
+      [req.user.id, phienNay ? hashSessionToken(phienNay) : ""]);
+    res.json({ success: true });
+  } catch (e: any) {
+    traLoiLoi(res, e);
+  }
 });
 
 function hashPassword(password: string): string {
@@ -2005,6 +2078,9 @@ app.get("/api/sheets/leave-requests", async (req, res) => {
       [workshopId]
     );
 
+    // So dien thoai chi quan tri can (bang duyet phep, xuat Excel). Nguoi dung
+    // thuong chi can danh sach cho xep lich nen khong nhan truong nay.
+    const xemDuSdt = laQuanTri(req);
     const leaveRequests = result.rows.map((row: any) => ({
       id: row.id || "",
       name: row.name || "",
@@ -2014,7 +2090,7 @@ app.get("/api/sheets/leave-requests", async (req, res) => {
       startDate: row.start_date || "",
       endDate: row.end_date || "",
       reason: row.reason || "",
-      phone: row.phone || "",
+      phone: xemDuSdt ? row.phone || "" : "",
       location: row.location || "",
       status: row.status || "",
       // createdAt la chuoi da dinh dang san theo gio Viet Nam tu luc nop don.

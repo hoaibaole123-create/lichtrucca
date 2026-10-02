@@ -398,6 +398,13 @@ export default function App() {
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   });
+  // Bang chi hien thang dang chon. Tinh thang theo gio Viet Nam cho khop voi
+  // may chu khi xoa theo thang (to_char(at AT TIME ZONE 'Asia/Ho_Chi_Minh')).
+  const swapHistoryThang = useMemo(
+    () => swapHistory.filter((r: any) =>
+      new Date(r.at).toLocaleDateString('en-CA', { timeZone: 'Asia/Ho_Chi_Minh', year: 'numeric', month: '2-digit' }) === swapHistoryDeleteMonth),
+    [swapHistory, swapHistoryDeleteMonth]
+  );
 
   // "Bảng duyệt nghỉ phép" report: leaves already scheduled (status != Chờ phân ca)
   const [approvedSearch, setApprovedSearch] = useState('');
@@ -2475,7 +2482,7 @@ export default function App() {
               </button>
             </div>
             <div className="flex items-center gap-2 mt-3 mb-3 flex-wrap">
-              <span className="text-[12px] text-slate-500">Xóa nhật ký tháng:</span>
+              <span className="text-[12px] text-slate-500">Tháng:</span>
               <select
                 value={swapHistoryDeleteMonth.split('-')[1]}
                 onChange={e => setSwapHistoryDeleteMonth(`${swapHistoryDeleteMonth.split('-')[0]}-${e.target.value}`)}
@@ -2502,9 +2509,9 @@ export default function App() {
                 🗑 Xóa tháng này
               </button>
             </div>
-            {swapHistory.length === 0 ? (
+            {swapHistoryThang.length === 0 ? (
               <p className="text-[12px] text-var(--txt2) italic">
-                {isLoadingSwapHistory ? 'Đang tải...' : 'Chưa có lần đổi ca nào được ghi.'}
+                {isLoadingSwapHistory ? 'Đang tải...' : `Tháng ${swapHistoryDeleteMonth.split('-')[1]}/${swapHistoryDeleteMonth.split('-')[0]} chưa có lần đổi ca nào.`}
               </p>
             ) : (
               <div className="max-h-[320px] overflow-auto rounded-lg border border-slate-200">
@@ -2520,7 +2527,7 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {swapHistory.map((r: any) => {
+                    {swapHistoryThang.map((r: any) => {
                       const at = new Date(r.at);
                       const fmt = (d: string | null) => d ? new Date(d).toLocaleDateString('vi-VN', { day:'2-digit', month:'2-digit', year:'numeric' }) : '—';
                       const fmtAt = at.toLocaleDateString('vi-VN', { day:'2-digit', month:'2-digit' }) + ' ' + at.toLocaleTimeString('vi-VN', { hour:'2-digit', minute:'2-digit' });
